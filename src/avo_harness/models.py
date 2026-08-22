@@ -11,6 +11,10 @@ class WorkerResult:
     output: str = ""
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    duration_seconds: float = 0.0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(slots=True)
@@ -23,6 +27,7 @@ class EvaluationResult:
     summary: str = ""
     stdout: str = ""
     stderr: str = ""
+    duration_seconds: float = 0.0
 
 
 @dataclass(slots=True)

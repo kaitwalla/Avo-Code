@@ -5,21 +5,32 @@ from dataclasses import replace
 from pathlib import Path
 
 from .config import SUPERVISOR_SYSTEM_PROMPT, SupervisorConfig, WorkerConfig
+from .models import WorkerResult
 from .store import Store
 from .worker import make_worker
+
+
+FALLBACK_DIRECTIVE = (
+    "Progress has stalled. Re-read evaluator failures and the relevant implementation before editing. "
+    "List three plausible root causes internally, choose one not already attempted, make the smallest "
+    "testable change for that hypothesis, and run the evaluator-facing checks before broad refactors."
+)
 
 
 class Supervisor:
     def __init__(self, config: SupervisorConfig, primary_worker: WorkerConfig):
         self.config = config
         source = config.worker or primary_worker
-        worker_config = replace(
+        self.worker_config = replace(
             source,
             command=list(source.command),
             env=dict(source.env),
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         )
-        self.worker = make_worker(worker_config)
+        self.worker = make_worker(self.worker_config)
+
+    def fallback(self) -> str:
+        return FALLBACK_DIRECTIVE
 
     def advise(
         self,
@@ -29,7 +40,7 @@ class Supervisor:
         best_score: float,
         store: Store,
         memory_window: int,
-    ) -> str:
+    ) -> tuple[str, WorkerResult]:
         recent = store.recent_candidates(run_id, memory_window)
         lines = [
             f"Objective: {objective}",
@@ -49,9 +60,5 @@ class Supervisor:
         with tempfile.TemporaryDirectory(prefix="avo-supervisor-") as tmp:
             result = self.worker.run("\n".join(lines), Path(tmp))
         if result.success and result.output.strip():
-            return result.output.strip()
-        return (
-            "Progress has stalled. Re-read evaluator failures and the relevant implementation before editing. "
-            "List three plausible root causes internally, choose one not already attempted, make the smallest "
-            "testable change for that hypothesis, and run the evaluator-facing checks before broad refactors."
-        )
+            return result.output.strip(), result
+        return FALLBACK_DIRECTIVE, result

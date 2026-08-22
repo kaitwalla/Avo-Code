@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from .config import EvaluatorConfig
@@ -21,11 +23,28 @@ def _parse_payload(stdout: str, return_code: int) -> tuple[float, str]:
     return (1.0 if return_code == 0 else 0.0), ""
 
 
-def evaluate_one(workspace: Path, spec: EvaluatorConfig) -> EvaluationResult:
+def _render_command(command: str, workspace: Path, variables: dict[str, str] | None) -> str:
+    replacements = {"workspace": str(workspace)}
+    replacements.update(variables or {})
+    rendered = command
+    for key, value in replacements.items():
+        rendered = rendered.replace("{" + key + "}", shlex.quote(value))
+    return rendered
+
+
+def evaluate_one(
+    workspace: Path,
+    spec: EvaluatorConfig,
+    *,
+    cwd: Path | None = None,
+    variables: dict[str, str] | None = None,
+) -> EvaluationResult:
+    started = time.monotonic()
+    command = _render_command(spec.command, workspace, variables)
     try:
         proc = subprocess.run(
-            spec.command,
-            cwd=workspace,
+            command,
+            cwd=cwd or workspace,
             shell=True,
             text=True,
             capture_output=True,
@@ -41,6 +60,7 @@ def evaluate_one(workspace: Path, spec: EvaluatorConfig) -> EvaluationResult:
             summary=summary,
             stdout=proc.stdout[-20000:],
             stderr=proc.stderr[-20000:],
+            duration_seconds=time.monotonic() - started,
         )
     except subprocess.TimeoutExpired as exc:
         return EvaluationResult(
@@ -52,11 +72,18 @@ def evaluate_one(workspace: Path, spec: EvaluatorConfig) -> EvaluationResult:
             summary=f"timed out after {spec.timeout_seconds}s",
             stdout=(exc.stdout or "")[-20000:] if isinstance(exc.stdout, str) else "",
             stderr=(exc.stderr or "")[-20000:] if isinstance(exc.stderr, str) else "",
+            duration_seconds=time.monotonic() - started,
         )
 
 
-def evaluate_all(workspace: Path, specs: list[EvaluatorConfig]) -> tuple[float, list[EvaluationResult]]:
-    results = [evaluate_one(workspace, spec) for spec in specs]
+def evaluate_all(
+    workspace: Path,
+    specs: list[EvaluatorConfig],
+    *,
+    cwd: Path | None = None,
+    variables: dict[str, str] | None = None,
+) -> tuple[float, list[EvaluationResult]]:
+    results = [evaluate_one(workspace, spec, cwd=cwd, variables=variables) for spec in specs]
     total_weight = sum(item.weight for item in results)
     score = sum(item.score * item.weight for item in results) / total_weight
     return score, results

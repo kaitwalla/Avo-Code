@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -21,6 +22,7 @@ class CommandWorker:
         self.config = config
 
     def run(self, prompt: str, workspace: Path) -> WorkerResult:
+        started = time.monotonic()
         env = os.environ.copy()
         env.update(self.config.env)
         env["AVO_WORKSPACE"] = str(workspace)
@@ -53,12 +55,14 @@ class CommandWorker:
                 output=proc.stdout[-50000:],
                 error=proc.stderr[-50000:],
                 metadata={"return_code": proc.returncode, "command": shlex.join(command)},
+                duration_seconds=time.monotonic() - started,
             )
         except subprocess.TimeoutExpired as exc:
             return WorkerResult(
                 success=False,
                 output=(exc.stdout or "")[-50000:] if isinstance(exc.stdout, str) else "",
                 error=f"worker timed out after {self.config.timeout_seconds}s",
+                duration_seconds=time.monotonic() - started,
             )
         finally:
             if prompt_path:
@@ -73,10 +77,17 @@ class NeMoWorker:
         self.config = config
 
     def run(self, prompt: str, workspace: Path) -> WorkerResult:
+        started = time.monotonic()
         try:
-            return asyncio.run(self._run(prompt, workspace))
+            result = asyncio.run(self._run(prompt, workspace))
+            result.duration_seconds = time.monotonic() - started
+            return result
         except Exception as exc:  # normalized at the harness boundary
-            return WorkerResult(success=False, error=f"NeMo Fabric worker failed: {exc}")
+            return WorkerResult(
+                success=False,
+                error=f"NeMo Fabric worker failed: {exc}",
+                duration_seconds=time.monotonic() - started,
+            )
 
     async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
         try:
