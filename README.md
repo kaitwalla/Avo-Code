@@ -4,7 +4,7 @@ Avo-Code is a long-horizon coding control plane built around deterministic evalu
 
 ## Web + iOS control plane
 
-Avo-Code now includes a universal Expo frontend in `ui/` plus a FastAPI backend exposed from the Python package.
+Avo-Code includes a universal Expo frontend in `ui/` plus a FastAPI backend exposed from the Python package.
 
 The UI is intentionally one product with two distribution targets:
 
@@ -22,6 +22,14 @@ avo-harness web -c avo.json --host 0.0.0.0 --port 8765
 ```
 
 If the UI is hosted from a different origin, set `AVO_WEB_ORIGINS` to a comma-separated list of allowed origins.
+
+AvoGym reports are discovered recursively beneath `AVO_BENCHMARK_ROOT`. By default that is `benchmarks/` beside the selected `avo.json` file. Point it elsewhere when reports are stored on another volume:
+
+```bash
+export AVO_BENCHMARK_ROOT=/srv/avo/benchmarks
+```
+
+The Benchmarks tab reads `report.json` and `routing-policy.json` from those output folders and shows benchmark history, strategy comparisons, the learned global default, and tag-specific routing evidence.
 
 ### Run the universal frontend
 
@@ -64,4 +72,4 @@ avo-harness benchmark benchmarks/representative/experiment.json \
   -o benchmarks/representative/reports/local-harnesses
 ```
 
-AvoGym records hidden-oracle quality, tokens, wall time, cost, role overhead, and emits a quality-first routing policy.
+AvoGym records hidden-oracle quality, tokens, wall time, cost, role overhead, and emits a quality-first routing policy. When that output lives beneath `AVO_BENCHMARK_ROOT`, it appears in the web/iOS Benchmarks tab automatically.
