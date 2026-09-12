@@ -35,6 +35,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _policy_variant(policy: dict[str, Any]) -> str | None:
+    default = policy.get("default")
+    if isinstance(default, dict) and default.get("variant"):
+        return str(default["variant"])
+    return None
+
+
 def _benchmark_entries(root: Path) -> list[dict[str, Any]]:
     if not root.exists():
         return []
@@ -49,6 +56,9 @@ def _benchmark_entries(root: Path) -> list[dict[str, Any]]:
         except ValueError:
             continue
         policy = _read_json(folder / "routing-policy.json")
+        if not policy:
+            embedded = report.get("routing_policy")
+            policy = embedded if isinstance(embedded, dict) else {}
         stat = report_path.stat()
         variants = report.get("variants", {})
         trials = report.get("trials", [])
@@ -59,7 +69,7 @@ def _benchmark_entries(root: Path) -> list[dict[str, Any]]:
                 "updated_at": stat.st_mtime,
                 "variant_count": len(variants) if isinstance(variants, dict) else 0,
                 "trial_count": len(trials) if isinstance(trials, list) else 0,
-                "default_strategy": policy.get("default_strategy"),
+                "default_strategy": _policy_variant(policy),
             }
         )
     return sorted(entries, key=lambda item: float(item["updated_at"]), reverse=True)
@@ -74,11 +84,10 @@ def _benchmark_detail(root: Path, benchmark_id: str) -> dict[str, Any] | None:
     if not report:
         return None
     policy = _read_json(candidate / "routing-policy.json")
-    return {
-        "id": benchmark_id,
-        "report": report,
-        "routing_policy": policy or report.get("routing_policy", {}),
-    }
+    if not policy:
+        embedded = report.get("routing_policy")
+        policy = embedded if isinstance(embedded, dict) else {}
+    return {"id": benchmark_id, "report": report, "routing_policy": policy}
 
 
 def create_app(config_path: str = "avo.json"):
