@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .avogym import BenchmarkRunner, ExperimentSpec, write_report
+from .avogym import BenchmarkRunner, ExperimentSpec, write_report, write_strategy_policy
 from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
@@ -110,9 +110,11 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     spec = ExperimentSpec.load(args.experiment)
     report = BenchmarkRunner(spec).run()
     json_path, html_path = write_report(report, args.output)
+    policy_path = write_strategy_policy(report, args.output)
     print(json.dumps(report.variants, indent=2))
     print(f"JSON: {json_path}")
     print(f"HTML: {html_path}")
+    print(f"Routing policy: {policy_path}")
     return 0
 
 
