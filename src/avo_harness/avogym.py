@@ -15,6 +15,7 @@ from .evaluator import evaluate_all
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
 from .store import Store
+from .strategy import build_strategy_policy
 
 
 @dataclass(slots=True)
@@ -105,22 +106,33 @@ class TrialResult:
     supervisor_invocations: int
     supervisor_uplift: float
     reported_cost_usd: float
+    input_tokens: int
+    output_tokens: int
+    role_invocations: int
+    role_seconds: float
+    role_breakdown: dict[str, dict[str, float | int]]
     run_id: str
     best_commit: str
     tags: list[str]
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass(slots=True)
 class BenchmarkReport:
     experiment: str
     trials: list[TrialResult]
-    variants: dict[str, dict[str, float | int]]
+    variants: dict[str, dict[str, Any]]
+    routing_policy: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "experiment": self.experiment,
             "trials": [asdict(item) for item in self.trials],
             "variants": self.variants,
+            "routing_policy": self.routing_policy,
         }
 
 
@@ -177,9 +189,63 @@ def _supervisor_uplift(
     return mean(improvements) if improvements else 0.0
 
 
-def _variant_summary(trials: list[TrialResult]) -> dict[str, float | int]:
+def _usage_number(value: Any, *names: str) -> int:
+    if not isinstance(value, dict):
+        return 0
+    for name in names:
+        item = value.get(name)
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            return int(item)
+    for key in ("usage", "token_usage", "tokens"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            found = _usage_number(nested, *names)
+            if found:
+                return found
+    return 0
+
+
+def _role_metrics(rows: list[dict[str, Any]]) -> tuple[int, int, float, dict[str, dict[str, float | int]]]:
+    input_tokens = 0
+    output_tokens = 0
+    seconds = 0.0
+    breakdown: dict[str, dict[str, float | int]] = {}
+    for row in rows:
+        role = str(row.get("role", "unknown"))
+        try:
+            metadata = json.loads(row.get("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        role_input = _usage_number(metadata, "input_tokens", "prompt_tokens", "input")
+        role_output = _usage_number(metadata, "output_tokens", "completion_tokens", "output")
+        role_seconds = float(row.get("duration_ms", 0) or 0) / 1000.0
+        input_tokens += role_input
+        output_tokens += role_output
+        seconds += role_seconds
+        bucket = breakdown.setdefault(
+            role,
+            {"invocations": 0, "input_tokens": 0, "output_tokens": 0, "seconds": 0.0},
+        )
+        bucket["invocations"] = int(bucket["invocations"]) + 1
+        bucket["input_tokens"] = int(bucket["input_tokens"]) + role_input
+        bucket["output_tokens"] = int(bucket["output_tokens"]) + role_output
+        bucket["seconds"] = float(bucket["seconds"]) + role_seconds
+    return input_tokens, output_tokens, seconds, breakdown
+
+
+def _invocation_tokens(rows: list[dict[str, Any]], *, exclude_worker: bool) -> tuple[int, int]:
+    selected = [row for row in rows if not (exclude_worker and row.get("role") == "worker")]
+    return (
+        sum(int(row.get("input_tokens") or 0) for row in selected),
+        sum(int(row.get("output_tokens") or 0) for row in selected),
+    )
+
+
+def _variant_summary(trials: list[TrialResult]) -> dict[str, Any]:
     if not trials:
         return {}
+    solves = sum(1 for trial in trials if trial.oracle_passed)
+    tokens = sum(trial.total_tokens for trial in trials)
     return {
         "trials": len(trials),
         "oracle_solve_rate": mean(1.0 if x.oracle_passed else 0.0 for x in trials),
@@ -192,6 +258,12 @@ def _variant_summary(trials: list[TrialResult]) -> dict[str, float | int]:
         "mean_wall_seconds": mean(x.wall_seconds for x in trials),
         "mean_cloud_invocations": mean(x.cloud_invocations for x in trials),
         "mean_local_invocations": mean(x.local_invocations for x in trials),
+        "mean_role_invocations": mean(x.role_invocations for x in trials),
+        "mean_role_seconds": mean(x.role_seconds for x in trials),
+        "mean_input_tokens": mean(x.input_tokens for x in trials),
+        "mean_output_tokens": mean(x.output_tokens for x in trials),
+        "mean_total_tokens": mean(x.total_tokens for x in trials),
+        "tokens_per_oracle_solve": (tokens / solves) if solves else None,
         "mean_supervisor_uplift": mean(x.supervisor_uplift for x in trials),
         "reported_cost_usd": sum(x.reported_cost_usd for x in trials),
     }
@@ -227,6 +299,7 @@ class BenchmarkRunner:
             try:
                 candidate_rows = [dict(x) for x in store.list_candidates(summary.run_id)]
                 invocation_rows = [dict(x) for x in store.list_invocations(summary.run_id)]
+                role_rows = [dict(x) for x in store.recent_role_runs(summary.run_id, 100000)]
             finally:
                 store.close()
 
@@ -245,6 +318,10 @@ class BenchmarkRunner:
             progress_auc = _progress_auc(summary.baseline_score, candidate_rows)
             supervisor_uplift = _supervisor_uplift(
                 summary.baseline_score, candidate_rows, invocation_rows
+            )
+            role_input, role_output, role_seconds, role_breakdown = _role_metrics(role_rows)
+            invocation_input, invocation_output = _invocation_tokens(
+                invocation_rows, exclude_worker=bool(role_rows)
             )
             return TrialResult(
                 experiment=self.spec.name,
@@ -267,6 +344,11 @@ class BenchmarkRunner:
                 supervisor_invocations=summary.supervisor_invocations,
                 supervisor_uplift=supervisor_uplift,
                 reported_cost_usd=summary.reported_cost_usd,
+                input_tokens=invocation_input + role_input,
+                output_tokens=invocation_output + role_output,
+                role_invocations=len(role_rows),
+                role_seconds=role_seconds,
+                role_breakdown=role_breakdown,
                 run_id=summary.run_id,
                 best_commit=summary.best_commit,
                 tags=task.tags,
@@ -283,28 +365,46 @@ class BenchmarkRunner:
             variant.name: _variant_summary([x for x in trials if x.variant == variant.name])
             for variant in self.spec.variants
         }
-        return BenchmarkReport(experiment=self.spec.name, trials=trials, variants=variants)
+        return BenchmarkReport(
+            experiment=self.spec.name,
+            trials=trials,
+            variants=variants,
+            routing_policy=build_strategy_policy(trials),
+        )
 
 
-def write_report(report: BenchmarkReport, output: str | Path) -> tuple[Path, Path]:
+def _report_paths(output: str | Path) -> tuple[Path, Path, Path]:
     output_path = Path(output)
     if output_path.suffix:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path = output_path.with_suffix(".json")
-        html_path = output_path.with_suffix(".html")
-    else:
-        output_path.mkdir(parents=True, exist_ok=True)
-        json_path = output_path / "report.json"
-        html_path = output_path / "report.html"
+        return (
+            output_path.with_suffix(".json"),
+            output_path.with_suffix(".html"),
+            output_path.with_name(output_path.stem + "-routing-policy.json"),
+        )
+    output_path.mkdir(parents=True, exist_ok=True)
+    return output_path / "report.json", output_path / "report.html", output_path / "routing-policy.json"
+
+
+def write_strategy_policy(report: BenchmarkReport, output: str | Path) -> Path:
+    _, _, policy_path = _report_paths(output)
+    policy_path.write_text(json.dumps(report.routing_policy, indent=2) + "\n", encoding="utf-8")
+    return policy_path
+
+
+def write_report(report: BenchmarkReport, output: str | Path) -> tuple[Path, Path]:
+    json_path, html_path, _ = _report_paths(output)
     json_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
 
     header = (
         "<tr><th>Variant</th><th>Trials</th><th>Oracle solve</th><th>Oracle score</th>"
-        "<th>Visible score</th><th>Eval gap</th><th>AUC</th><th>Cloud calls</th><th>Local calls</th>"
-        "<th>Wall s</th></tr>"
+        "<th>Visible score</th><th>Eval gap</th><th>Tokens</th><th>Tokens / solve</th>"
+        "<th>Role calls</th><th>Role s</th><th>Cloud calls</th><th>Wall s</th><th>Cost $</th></tr>"
     )
     rows = []
     for name, metrics in report.variants.items():
+        tokens_per_solve = metrics.get("tokens_per_oracle_solve")
+        tokens_per_solve_text = "-" if tokens_per_solve is None else f"{float(tokens_per_solve):.0f}"
         rows.append(
             "<tr>"
             f"<td>{html.escape(name)}</td>"
@@ -313,16 +413,21 @@ def write_report(report: BenchmarkReport, output: str | Path) -> tuple[Path, Pat
             f"<td>{float(metrics.get('mean_oracle_score', 0)):.3f}</td>"
             f"<td>{float(metrics.get('mean_visible_score', 0)):.3f}</td>"
             f"<td>{float(metrics.get('mean_evaluator_gap', 0)):.3f}</td>"
-            f"<td>{float(metrics.get('mean_progress_auc', 0)):.3f}</td>"
+            f"<td>{float(metrics.get('mean_total_tokens', 0)):.0f}</td>"
+            f"<td>{tokens_per_solve_text}</td>"
+            f"<td>{float(metrics.get('mean_role_invocations', 0)):.2f}</td>"
+            f"<td>{float(metrics.get('mean_role_seconds', 0)):.2f}</td>"
             f"<td>{float(metrics.get('mean_cloud_invocations', 0)):.2f}</td>"
-            f"<td>{float(metrics.get('mean_local_invocations', 0)):.2f}</td>"
             f"<td>{float(metrics.get('mean_wall_seconds', 0)):.2f}</td>"
+            f"<td>{float(metrics.get('reported_cost_usd', 0)):.4f}</td>"
             "</tr>"
         )
+    default = report.routing_policy.get("default") or {}
+    default_text = html.escape(str(default.get("variant", "none")))
     document = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{html.escape(report.experiment)}</title>
 <style>body{{font-family:system-ui,sans-serif;margin:2rem}}table{{border-collapse:collapse;width:100%}}
 th,td{{border:1px solid #bbb;padding:.45rem;text-align:right}}th:first-child,td:first-child{{text-align:left}}</style>
-</head><body><h1>{html.escape(report.experiment)}</h1><table><thead>{header}</thead><tbody>{''.join(rows)}</tbody></table></body></html>"""
+</head><body><h1>{html.escape(report.experiment)}</h1><p>Recommended default: <strong>{default_text}</strong></p><table><thead>{header}</thead><tbody>{''.join(rows)}</tbody></table></body></html>"""
     html_path.write_text(document, encoding="utf-8")
     return json_path, html_path
