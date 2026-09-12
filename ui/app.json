@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Avo",
+    "slug": "avo-code",
+    "scheme": "avo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.kaitwalla.avocode",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "plugins": ["expo-router", "expo-secure-store"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

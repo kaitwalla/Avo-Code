@@ -97,9 +97,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         payload["metadata"] = store.get_run_metadata(run_id)
         payload["invocations"] = store.invocation_summary(run_id)
         if args.roles:
-            payload["role_runs"] = [
-                dict(item) for item in store.recent_role_runs(run_id, args.limit)
-            ]
+            payload["role_runs"] = [dict(item) for item in store.recent_role_runs(run_id, args.limit)]
         print(json.dumps(payload, indent=2))
         return 0
     finally:
@@ -115,6 +113,18 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     print(f"JSON: {json_path}")
     print(f"HTML: {html_path}")
     print(f"Routing policy: {policy_path}")
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print("web dependencies are missing; install avo-harness[web]", file=sys.stderr)
+        return 2
+    from .api import create_app
+
+    uvicorn.run(create_app(args.config), host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
 
@@ -148,6 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("experiment")
     benchmark.add_argument("-o", "--output", default="avogym-report")
     benchmark.set_defaults(func=cmd_benchmark)
+
+    web = sub.add_parser("web", help="serve the web/iOS API")
+    web.add_argument("-c", "--config", default="avo.json")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8765)
+    web.add_argument("--log-level", default="info")
+    web.set_defaults(func=cmd_web)
     return parser
 
 
