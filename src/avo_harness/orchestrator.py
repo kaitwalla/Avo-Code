@@ -9,6 +9,7 @@ from .gitops import GitRepo
 from .models import Candidate, EvaluationResult
 from .store import Store
 from .supervisor import Supervisor
+from .team import make_team_worker
 from .worker import make_worker
 
 
@@ -39,7 +40,11 @@ class Orchestrator:
         self.config.state_path.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.config.state_path / "state.sqlite3")
         self.git = GitRepo(self.config.repo_path, self.config.state_path / "worktrees")
-        self.worker = make_worker(self.config.worker)
+        self.worker = (
+            make_team_worker(self.config.team, self.config.worker)
+            if self.config.team.enabled
+            else make_worker(self.config.worker)
+        )
         self.supervisor = Supervisor(self.config.supervisor, self.config.worker)
 
     def close(self) -> None:
@@ -53,14 +58,7 @@ class Orchestrator:
             chunks.append(f"{ev.name}: score={ev.score:.3f}; {detail}")
         return " | ".join(chunks)
 
-    def _prompt(
-        self,
-        objective: str,
-        run_id: str,
-        iteration: int,
-        best_score: float,
-        supervisor_directive: str | None,
-    ) -> str:
+    def _prompt(self, objective: str, run_id: str, iteration: int, best_score: float, supervisor_directive: str | None) -> str:
         recent = self.store.recent_candidates(run_id, self.config.memory_window)
         memories = self.store.recent_memories(run_id, self.config.memory_window)
         lines = [
@@ -101,16 +99,11 @@ class Orchestrator:
         base_commit = self.git.head()
         baseline_score, baseline_evals = self._baseline(run_id, base_commit)
         self.store.create_run(
-            run_id=run_id,
-            objective=objective,
-            repo_path=str(self.config.repo_path),
-            base_commit=base_commit,
-            best_score=baseline_score,
+            run_id=run_id, objective=objective, repo_path=str(self.config.repo_path),
+            base_commit=base_commit, best_score=baseline_score,
         )
         self.store.add_memory(
-            run_id,
-            0,
-            "baseline",
+            run_id, 0, "baseline",
             f"Baseline score={baseline_score:.4f}. {self._evaluation_memory(baseline_evals)}",
         )
 
@@ -129,39 +122,27 @@ class Orchestrator:
                 for iteration in range(1, self.config.max_iterations + 1):
                     iterations = iteration
                     branch = f"{self.config.result_branch_prefix}/{run_id}/i-{iteration:04d}"
-                    wt = self.git.add_worktree(
-                        run_id, f"i-{iteration:04d}", best_commit, branch=branch
-                    )
+                    wt = self.git.add_worktree(run_id, f"i-{iteration:04d}", best_commit, branch=branch)
                     try:
-                        prompt = self._prompt(
-                            objective, run_id, iteration, best_score, directive
-                        )
+                        prompt = self._prompt(objective, run_id, iteration, best_score, directive)
                         directive = None
                         worker_result = self.worker.run(prompt, wt.path)
-                        commit_sha = self.git.commit_all(
-                            wt, f"avo: candidate {run_id} iteration {iteration}"
-                        )
+                        commit_sha = self.git.commit_all(wt, f"avo: candidate {run_id} iteration {iteration}")
                         score, evaluations = evaluate_all(wt.path, self.config.evaluators)
                         improved = score > best_score + self.config.min_improvement
                         candidate = Candidate(
-                            iteration=iteration,
-                            branch=branch,
-                            workspace=wt.path,
-                            base_commit=best_commit,
-                            commit_sha=commit_sha,
-                            score=score,
-                            worker=worker_result,
-                            evaluations=evaluations,
-                            improved=improved,
+                            iteration=iteration, branch=branch, workspace=wt.path,
+                            base_commit=best_commit, commit_sha=commit_sha, score=score,
+                            worker=worker_result, evaluations=evaluations, improved=improved,
                         )
                         self.store.add_candidate(run_id, candidate)
                         self.store.add_memory(
-                            run_id,
-                            iteration,
-                            "attempt",
-                            f"score={score:.4f}; improved={improved}; "
-                            f"{self._evaluation_memory(evaluations)}",
+                            run_id, iteration, "attempt",
+                            f"score={score:.4f}; improved={improved}; {self._evaluation_memory(evaluations)}",
                         )
+                        team_summary = worker_result.metadata.get("team_summary")
+                        if isinstance(team_summary, str) and team_summary.strip():
+                            self.store.add_memory(run_id, iteration, "team", team_summary[:2400])
 
                         if improved:
                             best_score = score
@@ -182,16 +163,11 @@ class Orchestrator:
                         )
                         if supervisor_due:
                             directive = self.supervisor.advise(
-                                objective=objective,
-                                run_id=run_id,
-                                iteration=iteration,
-                                best_score=best_score,
-                                store=self.store,
+                                objective=objective, run_id=run_id, iteration=iteration,
+                                best_score=best_score, store=self.store,
                                 memory_window=self.config.memory_window,
                             )
-                            self.store.add_memory(
-                                run_id, iteration, "supervisor", directive
-                            )
+                            self.store.add_memory(run_id, iteration, "supervisor", directive)
                             last_supervised = iteration
                     finally:
                         if not self.config.keep_worktrees:
@@ -201,12 +177,8 @@ class Orchestrator:
             self.git.point_branch(result_branch, best_commit)
             self.store.finish_run(run_id, status)
             return RunSummary(
-                run_id=run_id,
-                status=status,
-                best_score=best_score,
-                best_commit=best_commit,
-                result_branch=result_branch,
-                iterations=iterations,
+                run_id=run_id, status=status, best_score=best_score,
+                best_commit=best_commit, result_branch=result_branch, iterations=iterations,
             )
         except Exception:
             self.store.finish_run(run_id, "failed")

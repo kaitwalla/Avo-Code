@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import AVOConfig, example_config
+from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
 from .store import Store
@@ -26,6 +26,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _worker_problems(label: str, worker: WorkerConfig) -> list[str]:
+    problems: list[str] = []
+    if worker.backend == "command":
+        executable = worker.command[0]
+        if "{" not in executable and shutil.which(executable) is None:
+            problems.append(f"{label} executable not found: {executable}")
+    return problems
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = _load(args.config)
     problems: list[str] = []
@@ -38,17 +47,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             problems.append(str(exc))
-    if config.worker.backend == "command":
-        executable = config.worker.command[0]
-        if "{" not in executable and shutil.which(executable) is None:
-            problems.append(f"worker executable not found: {executable}")
-    else:
+
+    workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
+    if config.supervisor.worker is not None:
+        workers.append(("supervisor.worker", config.supervisor.worker))
+    if config.team.enabled:
+        workers.extend(
+            (f"team.roles.{name}", worker)
+            for name, worker in config.team.resolved_workers(config.worker).items()
+        )
+    for label, worker in workers:
+        problems.extend(_worker_problems(label, worker))
+
+    if any(worker.backend == "nemo" for _, worker in workers):
         try:
             import nemo_fabric  # noqa: F401
         except ImportError:
             problems.append("nemo_fabric is not installed; install avo-harness[nemo]")
+
     if problems:
-        for item in problems:
+        for item in dict.fromkeys(problems):
             print(f"FAIL: {item}")
         return 1
     print("OK: configuration and runtime prerequisites look usable")
@@ -74,7 +92,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         if row is None:
             print("no runs found", file=sys.stderr)
             return 1
-        print(json.dumps(dict(row), indent=2))
+        payload: dict[str, object] = dict(row)
+        if args.roles:
+            payload["role_runs"] = [dict(item) for item in store.recent_role_runs(row["id"], args.limit)]
+        print(json.dumps(payload, indent=2))
         return 0
     finally:
         store.close()
@@ -102,6 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show a persisted run")
     status.add_argument("run_id", nargs="?")
     status.add_argument("-c", "--config", default="avo.json")
+    status.add_argument("--roles", action="store_true", help="include recent lazy-team role invocations")
+    status.add_argument("--limit", type=int, default=50, help="maximum role invocations to include")
     status.set_defaults(func=cmd_status)
     return parser
 

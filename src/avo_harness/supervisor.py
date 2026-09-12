@@ -17,6 +17,8 @@ class Supervisor:
             source,
             command=list(source.command),
             env=dict(source.env),
+            model_settings=dict(source.model_settings),
+            harness_settings=dict(source.harness_settings),
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         )
         self.worker = make_worker(worker_config)
@@ -31,11 +33,7 @@ class Supervisor:
         memory_window: int,
     ) -> str:
         recent = store.recent_candidates(run_id, memory_window)
-        lines = [
-            f"Objective: {objective}",
-            f"Current best score: {best_score:.4f}",
-            "Recent attempts:",
-        ]
+        lines = [f"Objective: {objective}", f"Current best score: {best_score:.4f}", "Recent attempts:"]
         for row in recent:
             worker_text = (row["worker_output"] or row["worker_error"] or "").strip().replace("\n", " ")
             lines.append(
