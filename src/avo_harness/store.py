@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .models import Candidate, EvaluationResult
+from .models import Candidate, EvaluationResult, WorkerResult
 
 
 def _now() -> str:
@@ -75,10 +76,35 @@ class Store:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
+            CREATE TABLE IF NOT EXISTS run_metadata (
+                run_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY(run_id, key),
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+            CREATE TABLE IF NOT EXISTS invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                execution_class TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                duration_seconds REAL NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cost_usd REAL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_candidates_run_iteration
               ON candidates(run_id, iteration DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_run_iteration
               ON memories(run_id, iteration DESC);
+            CREATE INDEX IF NOT EXISTS idx_invocations_run_iteration
+              ON invocations(run_id, iteration);
             """
         )
         self.db.commit()
@@ -99,6 +125,83 @@ class Store:
             (run_id, objective, repo_path, base_commit, base_commit, best_score, now, now),
         )
         self.db.commit()
+
+    def set_run_metadata(self, run_id: str, key: str, value: object) -> None:
+        encoded = json.dumps(value, sort_keys=True)
+        self.db.execute(
+            """INSERT INTO run_metadata (run_id, key, value) VALUES (?, ?, ?)
+               ON CONFLICT(run_id, key) DO UPDATE SET value=excluded.value""",
+            (run_id, key, encoded),
+        )
+        self.db.commit()
+
+    def get_run_metadata(self, run_id: str) -> dict[str, object]:
+        rows = self.db.execute(
+            "SELECT key, value FROM run_metadata WHERE run_id=?", (run_id,)
+        ).fetchall()
+        return {row["key"]: json.loads(row["value"]) for row in rows}
+
+    def add_invocation(
+        self,
+        run_id: str,
+        iteration: int,
+        role: str,
+        execution_class: str,
+        backend: str,
+        result: WorkerResult,
+    ) -> None:
+        self.db.execute(
+            """INSERT INTO invocations
+               (run_id, iteration, role, execution_class, backend, success, duration_seconds,
+                input_tokens, output_tokens, cost_usd, metadata_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                iteration,
+                role,
+                execution_class,
+                backend,
+                int(result.success),
+                result.duration_seconds,
+                result.input_tokens,
+                result.output_tokens,
+                result.cost_usd,
+                json.dumps(result.metadata, sort_keys=True, default=str),
+                _now(),
+            ),
+        )
+        self.db.commit()
+
+    def list_invocations(self, run_id: str) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                "SELECT * FROM invocations WHERE run_id=? ORDER BY id", (run_id,)
+            ).fetchall()
+        )
+
+    def invocation_summary(self, run_id: str) -> dict[str, float | int]:
+        row = self.db.execute(
+            """SELECT
+                 COUNT(*) AS total,
+                 SUM(CASE WHEN execution_class='cloud' THEN 1 ELSE 0 END) AS cloud,
+                 SUM(CASE WHEN execution_class='local' THEN 1 ELSE 0 END) AS local,
+                 SUM(CASE WHEN role='planner' THEN 1 ELSE 0 END) AS planner,
+                 SUM(CASE WHEN role='supervisor' THEN 1 ELSE 0 END) AS supervisor,
+                 COALESCE(SUM(duration_seconds), 0) AS duration,
+                 COALESCE(SUM(cost_usd), 0) AS cost
+               FROM invocations WHERE run_id=?""",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        return {
+            "total_invocations": int(row["total"] or 0),
+            "cloud_invocations": int(row["cloud"] or 0),
+            "local_invocations": int(row["local"] or 0),
+            "planner_invocations": int(row["planner"] or 0),
+            "supervisor_invocations": int(row["supervisor"] or 0),
+            "invocation_seconds": float(row["duration"] or 0.0),
+            "reported_cost_usd": float(row["cost"] or 0.0),
+        }
 
     def update_run_best(self, run_id: str, commit_sha: str, score: float) -> None:
         self.db.execute(
@@ -169,6 +272,8 @@ class Store:
         self.db.commit()
 
     def recent_candidates(self, run_id: str, limit: int = 6) -> list[sqlite3.Row]:
+        if limit <= 0:
+            return []
         return list(
             self.db.execute(
                 """SELECT * FROM candidates WHERE run_id=?
@@ -177,7 +282,16 @@ class Store:
             ).fetchall()
         )[::-1]
 
+    def list_candidates(self, run_id: str) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                "SELECT * FROM candidates WHERE run_id=? ORDER BY iteration", (run_id,)
+            ).fetchall()
+        )
+
     def recent_memories(self, run_id: str, limit: int = 6) -> list[sqlite3.Row]:
+        if limit <= 0:
+            return []
         return list(
             self.db.execute(
                 """SELECT * FROM memories WHERE run_id=?

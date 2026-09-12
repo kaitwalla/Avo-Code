@@ -6,7 +6,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import AVOConfig, example_config
+from .avogym import BenchmarkRunner, ExperimentSpec, write_report
+from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
 from .store import Store
@@ -26,6 +27,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_worker(label: str, worker: WorkerConfig, problems: list[str]) -> None:
+    if worker.backend == "command":
+        executable = worker.command[0]
+        if "{" not in executable and shutil.which(executable) is None:
+            problems.append(f"{label} executable not found: {executable}")
+    else:
+        try:
+            import nemo_fabric  # noqa: F401
+        except ImportError:
+            problems.append(f"{label}: nemo_fabric is not installed; install avo-harness[nemo]")
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = _load(args.config)
     problems: list[str] = []
@@ -38,15 +51,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             problems.append(str(exc))
-    if config.worker.backend == "command":
-        executable = config.worker.command[0]
-        if "{" not in executable and shutil.which(executable) is None:
-            problems.append(f"worker executable not found: {executable}")
-    else:
-        try:
-            import nemo_fabric  # noqa: F401
-        except ImportError:
-            problems.append("nemo_fabric is not installed; install avo-harness[nemo]")
+    _check_worker("worker", config.worker, problems)
+    if config.planner.enabled and config.planner.worker is not None:
+        _check_worker("planner", config.planner.worker, problems)
+    if config.supervisor.enabled and config.supervisor.worker is not None:
+        _check_worker("supervisor", config.supervisor.worker, problems)
     if problems:
         for item in problems:
             print(f"FAIL: {item}")
@@ -74,10 +83,24 @@ def cmd_status(args: argparse.Namespace) -> int:
         if row is None:
             print("no runs found", file=sys.stderr)
             return 1
-        print(json.dumps(dict(row), indent=2))
+        run_id = str(row["id"])
+        payload = dict(row)
+        payload["metadata"] = store.get_run_metadata(run_id)
+        payload["invocations"] = store.invocation_summary(run_id)
+        print(json.dumps(payload, indent=2))
         return 0
     finally:
         store.close()
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    spec = ExperimentSpec.load(args.experiment)
+    report = BenchmarkRunner(spec).run()
+    json_path, html_path = write_report(report, args.output)
+    print(json.dumps(report.variants, indent=2))
+    print(f"JSON: {json_path}")
+    print(f"HTML: {html_path}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,6 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("run_id", nargs="?")
     status.add_argument("-c", "--config", default="avo.json")
     status.set_defaults(func=cmd_status)
+
+    benchmark = sub.add_parser("benchmark", help="run an AvoGym benchmark/ablation experiment")
+    benchmark.add_argument("experiment")
+    benchmark.add_argument("-o", "--output", default="avogym-report")
+    benchmark.set_defaults(func=cmd_benchmark)
     return parser
 
 
