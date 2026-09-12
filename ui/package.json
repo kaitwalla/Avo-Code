@@ -11,6 +11,7 @@
     "doctor": "expo-doctor"
   },
   "dependencies": {
+    "@expo/vector-icons": "*",
     "expo": "^57.0.17",
     "expo-router": "~57.0.20",
     "expo-secure-store": "*",
