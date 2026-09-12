@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from avo_harness.avogym import BenchmarkRunner, ExperimentSpec, write_report
+from avo_harness.avogym import BenchmarkRunner, ExperimentSpec, write_report, write_strategy_policy
 
 
 def git(repo: Path, *args: str) -> str:
@@ -80,9 +80,18 @@ def test_hidden_oracle_detects_visible_test_gaming(tmp_path: Path) -> None:
     assert trial.evaluator_gap == 1.0
     assert not trial.oracle_passed
     assert trial.cloud_invocations == 0
+    assert trial.input_tokens == 0
+    assert trial.output_tokens == 0
+    assert trial.role_invocations == 0
+    assert report.routing_policy["default"]["variant"] == "local-only"
 
     json_path, html_path = write_report(report, tmp_path / "report")
+    policy_path = write_strategy_policy(report, tmp_path / "report")
     assert json_path.exists()
     assert html_path.exists()
+    assert policy_path.exists()
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["variants"]["local-only"]["oracle_solve_rate"] == 0.0
+    assert payload["variants"]["local-only"]["tokens_per_oracle_solve"] is None
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    assert policy["by_tag"]["test-integrity"]["variant"] == "local-only"
