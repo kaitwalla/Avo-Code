@@ -1,8 +1,8 @@
 import { Tabs } from 'expo-router';
-import { Text, useWindowDimensions } from 'react-native';
+import { ColorValue, Text, useWindowDimensions } from 'react-native';
 import { palette } from '@/lib/theme';
 
-const icon = (symbol: string, color: string) => <Text style={{ color, fontSize: 18 }}>{symbol}</Text>;
+const icon = (symbol: string, color: ColorValue) => <Text style={{ color, fontSize: 18 }}>{symbol}</Text>;
 
 export default function TabLayout() {
   const { width } = useWindowDimensions();
