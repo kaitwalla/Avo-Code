@@ -1,0 +1,113 @@
+{
+  "name": "representative-harness-strategies",
+  "base_config": "base.local.json",
+  "seeds": [0, 1],
+  "variants": [
+    {
+      "name": "hermes-single",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.hermes"},
+        "team": {"enabled": false}
+      }
+    },
+    {
+      "name": "hermes-lazy-team",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.hermes"},
+        "team": {"enabled": true}
+      }
+    },
+    {
+      "name": "deepagents-single",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.langchain.deepagents"},
+        "team": {"enabled": false}
+      }
+    },
+    {
+      "name": "deepagents-lazy-team",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.langchain.deepagents"},
+        "team": {"enabled": true}
+      }
+    },
+    {
+      "name": "codex-single",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.codex"},
+        "team": {"enabled": false}
+      }
+    },
+    {
+      "name": "codex-lazy-team",
+      "overrides": {
+        "worker": {"backend": "nemo", "adapter_id": "nvidia.fabric.codex"},
+        "team": {"enabled": true}
+      }
+    },
+    {
+      "name": "goose-single",
+      "overrides": {
+        "worker": {
+          "backend": "command",
+          "command": ["goose", "run", "--text", "{prompt}"],
+          "execution_class": "local"
+        },
+        "team": {"enabled": false}
+      }
+    },
+    {
+      "name": "goose-lazy-team",
+      "overrides": {
+        "worker": {
+          "backend": "command",
+          "command": ["goose", "run", "--text", "{prompt}"],
+          "execution_class": "local"
+        },
+        "team": {"enabled": true}
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "bugfix-normalize",
+      "source": ".generated/bugfix-normalize/repo",
+      "objective": "Fix normalize_email so it preserves valid local-part characters, normalizes case/whitespace, and rejects malformed addresses without weakening the visible test.",
+      "oracle_cwd": ".generated/bugfix-normalize",
+      "oracle": [{"name": "hidden", "command": "python oracle.py {workspace}"}],
+      "tags": ["bugfix", "small-change"]
+    },
+    {
+      "id": "repo-analysis-settings",
+      "source": ".generated/repo-analysis-settings/repo",
+      "objective": "Trace how runtime settings flow through the repository and fix precedence/coercion so environment values override config values and string booleans behave correctly.",
+      "oracle_cwd": ".generated/repo-analysis-settings",
+      "oracle": [{"name": "hidden", "command": "python oracle.py {workspace}"}],
+      "tags": ["repo-analysis", "bugfix"]
+    },
+    {
+      "id": "migration-config-v2",
+      "source": ".generated/migration-config-v2/repo",
+      "objective": "Implement the documented v2 config migration while preserving the v1 public return contract and rejecting unknown future versions.",
+      "oracle_cwd": ".generated/migration-config-v2",
+      "oracle": [{"name": "hidden", "command": "python oracle.py {workspace}"}],
+      "tags": ["migration", "architecture"]
+    },
+    {
+      "id": "infra-compose-health",
+      "source": ".generated/infra-compose-health/repo",
+      "objective": "Fix the Docker Compose healthcheck so it tests the actual service inside the container, preserves configurable host-port mapping, and gives startup a sensible grace period.",
+      "oracle_cwd": ".generated/infra-compose-health",
+      "oracle": [{"name": "hidden", "command": "python oracle.py {workspace}"}],
+      "tags": ["infra", "docker"]
+    },
+    {
+      "id": "feature-ttl-cache",
+      "source": ".generated/feature-ttl-cache/repo",
+      "objective": "Complete TTLCache so values expire exactly at the TTL boundary, resetting a key resets its lifetime, defaults work, and expired entries are evicted.",
+      "oracle_cwd": ".generated/feature-ttl-cache",
+      "oracle": [{"name": "hidden", "command": "python oracle.py {workspace}"}],
+      "tags": ["feature", "stateful"]
+    }
+  ]
+}
