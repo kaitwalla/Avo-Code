@@ -18,6 +18,50 @@ export type RunDetail = RunSummary & {
   metadata: Record<string, unknown>;
 };
 
+export type VariantMetrics = {
+  trials?: number;
+  oracle_solve_rate?: number;
+  mean_oracle_score?: number;
+  mean_visible_score?: number;
+  mean_total_tokens?: number;
+  tokens_per_oracle_solve?: number | null;
+  mean_wall_seconds?: number;
+  mean_role_invocations?: number;
+  mean_role_seconds?: number;
+  reported_cost_usd?: number;
+};
+
+export type RoutingChoice = {
+  strategy?: string;
+  variant?: string;
+  evidence?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type BenchmarkSummary = {
+  id: string;
+  experiment: string;
+  updated_at: number;
+  variant_count: number;
+  trial_count: number;
+  default_strategy?: string | null;
+};
+
+export type BenchmarkDetail = {
+  id: string;
+  report: {
+    experiment?: string;
+    variants?: Record<string, VariantMetrics>;
+    trials?: Array<Record<string, unknown>>;
+    routing_policy?: Record<string, unknown>;
+  };
+  routing_policy: {
+    default_strategy?: string;
+    by_tag?: Record<string, string | RoutingChoice>;
+    [key: string]: unknown;
+  };
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { apiUrl, token } = await loadConnection();
   const response = await fetch(`${apiUrl}${path}`, {
@@ -36,11 +80,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; auth: boolean }>('/api/health'),
+  health: () => request<{ ok: boolean; auth: boolean; benchmark_root?: string }>('/api/health'),
   runs: () => request<RunSummary[]>('/api/runs'),
   run: (id: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
   start: (objective: string) => request<{ accepted: boolean; pid: number }>('/api/runs', {
     method: 'POST',
     body: JSON.stringify({ objective }),
   }),
+  benchmarks: () => request<BenchmarkSummary[]>('/api/benchmarks'),
+  benchmark: (id: string) => request<BenchmarkDetail>(`/api/benchmarks/${id.split('/').map(encodeURIComponent).join('/')}`),
 };
