@@ -25,6 +25,8 @@ class Supervisor:
             source,
             command=list(source.command),
             env=dict(source.env),
+            model_settings=dict(source.model_settings),
+            harness_settings=dict(source.harness_settings),
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         )
         self.worker = make_worker(self.worker_config)

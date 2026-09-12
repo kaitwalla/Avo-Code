@@ -51,13 +51,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             problems.append(str(exc))
-    _check_worker("worker", config.worker, problems)
+
+    workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
     if config.planner.enabled and config.planner.worker is not None:
-        _check_worker("planner", config.planner.worker, problems)
+        workers.append(("planner", config.planner.worker))
     if config.supervisor.enabled and config.supervisor.worker is not None:
-        _check_worker("supervisor", config.supervisor.worker, problems)
+        workers.append(("supervisor", config.supervisor.worker))
+    if config.team.enabled:
+        workers.extend(
+            (f"team.roles.{name}", worker)
+            for name, worker in config.team.resolved_workers(config.worker).items()
+        )
+    for label, worker in workers:
+        _check_worker(label, worker, problems)
+
     if problems:
-        for item in problems:
+        for item in dict.fromkeys(problems):
             print(f"FAIL: {item}")
         return 1
     print("OK: configuration and runtime prerequisites look usable")
@@ -84,9 +93,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             print("no runs found", file=sys.stderr)
             return 1
         run_id = str(row["id"])
-        payload = dict(row)
+        payload: dict[str, object] = dict(row)
         payload["metadata"] = store.get_run_metadata(run_id)
         payload["invocations"] = store.invocation_summary(run_id)
+        if args.roles:
+            payload["role_runs"] = [
+                dict(item) for item in store.recent_role_runs(run_id, args.limit)
+            ]
         print(json.dumps(payload, indent=2))
         return 0
     finally:
@@ -125,6 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show a persisted run")
     status.add_argument("run_id", nargs="?")
     status.add_argument("-c", "--config", default="avo.json")
+    status.add_argument("--roles", action="store_true", help="include recent lazy-team role invocations")
+    status.add_argument("--limit", type=int, default=50, help="maximum role invocations to include")
     status.set_defaults(func=cmd_status)
 
     benchmark = sub.add_parser("benchmark", help="run an AvoGym benchmark/ablation experiment")

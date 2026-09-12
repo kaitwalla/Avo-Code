@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .models import Candidate, EvaluationResult, WorkerResult
 
@@ -99,12 +99,28 @@ class Store:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
+            CREATE TABLE IF NOT EXISTS role_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL,
+                sequence INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                output TEXT NOT NULL,
+                error TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(candidate_id) REFERENCES candidates(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_candidates_run_iteration
               ON candidates(run_id, iteration DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_run_iteration
               ON memories(run_id, iteration DESC);
             CREATE INDEX IF NOT EXISTS idx_invocations_run_iteration
               ON invocations(run_id, iteration);
+            CREATE INDEX IF NOT EXISTS idx_role_runs_candidate_sequence
+              ON role_runs(candidate_id, sequence);
             """
         )
         self.db.commit()
@@ -238,6 +254,9 @@ class Store:
         )
         candidate_id = int(cursor.lastrowid)
         self._add_evaluations(candidate_id, candidate.evaluations)
+        role_runs = candidate.worker.metadata.get("role_runs", [])
+        if isinstance(role_runs, list):
+            self._add_role_runs(candidate_id, role_runs)
         self.db.commit()
         return candidate_id
 
@@ -263,6 +282,33 @@ class Store:
                 for ev in evaluations
             ],
         )
+
+    def _add_role_runs(self, candidate_id: int, role_runs: Iterable[dict[str, Any]]) -> None:
+        rows = []
+        for index, item in enumerate(role_runs, start=1):
+            metadata = item.get("metadata", {})
+            rows.append(
+                (
+                    candidate_id,
+                    int(item.get("sequence", index)),
+                    str(item.get("role", "unknown")),
+                    str(item.get("reason", "")),
+                    int(bool(item.get("success", False))),
+                    int(item.get("duration_ms", 0)),
+                    str(item.get("output", "")),
+                    str(item.get("error", "")),
+                    json.dumps(metadata, default=str, sort_keys=True),
+                    _now(),
+                )
+            )
+        if rows:
+            self.db.executemany(
+                """INSERT INTO role_runs
+                   (candidate_id, sequence, role, reason, success, duration_ms,
+                    output, error, metadata_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
 
     def add_memory(self, run_id: str, iteration: int, kind: str, content: str) -> None:
         self.db.execute(
@@ -299,6 +345,17 @@ class Store:
                 (run_id, limit),
             ).fetchall()
         )[::-1]
+
+    def recent_role_runs(self, run_id: str, limit: int = 50) -> list[sqlite3.Row]:
+        if limit <= 0:
+            return []
+        rows = self.db.execute(
+            """SELECT rr.*, c.iteration, c.run_id
+               FROM role_runs rr JOIN candidates c ON c.id = rr.candidate_id
+               WHERE c.run_id=? ORDER BY rr.id DESC LIMIT ?""",
+            (run_id, limit),
+        ).fetchall()
+        return list(rows)[::-1]
 
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()

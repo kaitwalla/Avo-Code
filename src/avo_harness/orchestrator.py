@@ -13,6 +13,7 @@ from .models import Candidate, EvaluationResult
 from .planner import Planner
 from .store import Store
 from .supervisor import Supervisor
+from .team import make_team_worker
 from .worker import make_worker
 
 
@@ -57,7 +58,11 @@ class Orchestrator:
         self.config.state_path.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.config.state_path / "state.sqlite3")
         self.git = GitRepo(self.config.repo_path, self.config.state_path / "worktrees")
-        self.worker = make_worker(self.config.worker)
+        self.worker = (
+            make_team_worker(self.config.team, self.config.worker)
+            if self.config.team.enabled
+            else make_worker(self.config.worker)
+        )
         self.planner = Planner(self.config.planner, self.config.worker)
         self.supervisor = Supervisor(self.config.supervisor, self.config.worker)
         self._cloud_assist_calls = 0
@@ -243,6 +248,9 @@ class Orchestrator:
                             f"score={score:.4f}; improved={improved}; "
                             f"{self._evaluation_memory(evaluations)}",
                         )
+                        team_summary = worker_result.metadata.get("team_summary")
+                        if isinstance(team_summary, str) and team_summary.strip():
+                            self.store.add_memory(run_id, iteration, "team", team_summary[:2400])
 
                         if improved:
                             best_score = score
@@ -290,9 +298,7 @@ class Orchestrator:
                                     "Cloud supervisor skipped because the assist budget was exhausted; "
                                     "using deterministic fallback guidance.",
                                 )
-                            self.store.add_memory(
-                                run_id, iteration, "supervisor", directive
-                            )
+                            self.store.add_memory(run_id, iteration, "supervisor", directive)
                             last_supervised = iteration
                     finally:
                         if not self.config.keep_worktrees:

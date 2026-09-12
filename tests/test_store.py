@@ -4,7 +4,7 @@ from avo_harness.models import Candidate, EvaluationResult, WorkerResult
 from avo_harness.store import Store
 
 
-def test_store_persists_lineage_memory_and_invocations(tmp_path: Path) -> None:
+def test_store_persists_lineage_memory_invocations_and_role_runs(tmp_path: Path) -> None:
     store = Store(tmp_path / "state.sqlite3")
     store.create_run("r1", "fix it", "/repo", "abc", 0.2)
     store.set_run_metadata("r1", "baseline_score", 0.2)
@@ -15,7 +15,25 @@ def test_store_persists_lineage_memory_and_invocations(tmp_path: Path) -> None:
         base_commit="abc",
         commit_sha="def",
         score=0.8,
-        worker=WorkerResult(success=True, output="done", duration_seconds=1.5),
+        worker=WorkerResult(
+            success=True,
+            output="done",
+            duration_seconds=1.5,
+            metadata={
+                "role_runs": [
+                    {
+                        "sequence": 1,
+                        "role": "coder",
+                        "reason": "primary",
+                        "success": True,
+                        "duration_ms": 12,
+                        "output": "done",
+                        "error": "",
+                        "metadata": {"usage": {"input_tokens": 10}},
+                    }
+                ]
+            },
+        ),
         evaluations=[EvaluationResult("tests", 0.8, 1, False, 1, summary="one failure")],
         improved=True,
     )
@@ -33,4 +51,8 @@ def test_store_persists_lineage_memory_and_invocations(tmp_path: Path) -> None:
     summary = store.invocation_summary("r1")
     assert summary["local_invocations"] == 1
     assert summary["cloud_invocations"] == 0
+    role = store.recent_role_runs("r1", 3)[0]
+    assert role["role"] == "coder"
+    assert role["duration_ms"] == 12
+    assert '"input_tokens": 10' in role["metadata_json"]
     store.close()
