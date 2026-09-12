@@ -1,0 +1,33 @@
+{
+  "repo": ".",
+  "state_dir": ".state",
+  "max_iterations": 3,
+  "acceptance_score": 1.0,
+  "cloud_assist_budget": 0,
+  "worker": {
+    "backend": "nemo",
+    "adapter_id": "nvidia.fabric.hermes",
+    "provider": "openai",
+    "model": "local-coder",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "execution_class": "local",
+    "max_turns": 24,
+    "timeout_seconds": 1800
+  },
+  "planner": {
+    "enabled": false
+  },
+  "supervisor": {
+    "enabled": false
+  },
+  "team": {
+    "enabled": false
+  },
+  "evaluators": [
+    {
+      "name": "visible",
+      "command": "python visible_test.py",
+      "weight": 1.0
+    }
+  ]
+}
