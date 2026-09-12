@@ -31,11 +31,14 @@ export type VariantMetrics = {
   reported_cost_usd?: number;
 };
 
-export type RoutingChoice = {
-  strategy?: string;
-  variant?: string;
-  evidence?: Record<string, unknown>;
-  [key: string]: unknown;
+export type StrategyChoice = {
+  variant: string;
+  trials?: number;
+  solve_rate?: number;
+  mean_oracle_score?: number;
+  mean_tokens?: number;
+  mean_wall_seconds?: number;
+  mean_cost_usd?: number;
 };
 
 export type BenchmarkSummary = {
@@ -56,9 +59,10 @@ export type BenchmarkDetail = {
     routing_policy?: Record<string, unknown>;
   };
   routing_policy: {
-    default_strategy?: string;
-    by_tag?: Record<string, string | RoutingChoice>;
-    [key: string]: unknown;
+    version?: number;
+    selection?: string;
+    default?: StrategyChoice | null;
+    by_tag?: Record<string, StrategyChoice>;
   };
 };
 
