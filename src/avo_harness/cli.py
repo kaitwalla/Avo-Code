@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .avogym import BenchmarkRunner, ExperimentSpec, write_report
 from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
@@ -26,13 +27,16 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _worker_problems(label: str, worker: WorkerConfig) -> list[str]:
-    problems: list[str] = []
+def _check_worker(label: str, worker: WorkerConfig, problems: list[str]) -> None:
     if worker.backend == "command":
         executable = worker.command[0]
         if "{" not in executable and shutil.which(executable) is None:
             problems.append(f"{label} executable not found: {executable}")
-    return problems
+    else:
+        try:
+            import nemo_fabric  # noqa: F401
+        except ImportError:
+            problems.append(f"{label}: nemo_fabric is not installed; install avo-harness[nemo]")
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -49,21 +53,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             problems.append(str(exc))
 
     workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
-    if config.supervisor.worker is not None:
-        workers.append(("supervisor.worker", config.supervisor.worker))
+    if config.planner.enabled and config.planner.worker is not None:
+        workers.append(("planner", config.planner.worker))
+    if config.supervisor.enabled and config.supervisor.worker is not None:
+        workers.append(("supervisor", config.supervisor.worker))
     if config.team.enabled:
         workers.extend(
             (f"team.roles.{name}", worker)
             for name, worker in config.team.resolved_workers(config.worker).items()
         )
     for label, worker in workers:
-        problems.extend(_worker_problems(label, worker))
-
-    if any(worker.backend == "nemo" for _, worker in workers):
-        try:
-            import nemo_fabric  # noqa: F401
-        except ImportError:
-            problems.append("nemo_fabric is not installed; install avo-harness[nemo]")
+        _check_worker(label, worker, problems)
 
     if problems:
         for item in dict.fromkeys(problems):
@@ -92,13 +92,28 @@ def cmd_status(args: argparse.Namespace) -> int:
         if row is None:
             print("no runs found", file=sys.stderr)
             return 1
+        run_id = str(row["id"])
         payload: dict[str, object] = dict(row)
+        payload["metadata"] = store.get_run_metadata(run_id)
+        payload["invocations"] = store.invocation_summary(run_id)
         if args.roles:
-            payload["role_runs"] = [dict(item) for item in store.recent_role_runs(row["id"], args.limit)]
+            payload["role_runs"] = [
+                dict(item) for item in store.recent_role_runs(run_id, args.limit)
+            ]
         print(json.dumps(payload, indent=2))
         return 0
     finally:
         store.close()
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    spec = ExperimentSpec.load(args.experiment)
+    report = BenchmarkRunner(spec).run()
+    json_path, html_path = write_report(report, args.output)
+    print(json.dumps(report.variants, indent=2))
+    print(f"JSON: {json_path}")
+    print(f"HTML: {html_path}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--roles", action="store_true", help="include recent lazy-team role invocations")
     status.add_argument("--limit", type=int, default=50, help="maximum role invocations to include")
     status.set_defaults(func=cmd_status)
+
+    benchmark = sub.add_parser("benchmark", help="run an AvoGym benchmark/ablation experiment")
+    benchmark.add_argument("experiment")
+    benchmark.add_argument("-o", "--output", default="avogym-report")
+    benchmark.set_defaults(func=cmd_benchmark)
     return parser
 
 

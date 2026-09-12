@@ -20,9 +20,7 @@ def _iteration_from_prompt(prompt: str) -> int:
 
 def _explicit_role_requested(prompt: str, role: str) -> bool:
     escaped = re.escape(role)
-    return bool(
-        re.search(rf"(?i)(?:@{escaped}\b|\[role:{escaped}\]|\buse\s+{escaped}\b)", prompt)
-    )
+    return bool(re.search(rf"(?i)(?:@{escaped}\b|\[role:{escaped}\]|\buse\s+{escaped}\b)", prompt))
 
 
 def _triggered(role: RoleConfig, prompt: str) -> bool:
@@ -42,20 +40,15 @@ def _usage_totals(role_runs: list[dict[str, Any]]) -> dict[str, float | int]:
 
 
 class TeamWorker:
-    """A deterministic, lazy multi-role worker built on the normal Worker boundary.
-
-    Roles inherit the shared base worker configuration. Specialist roles are only activated
-    by explicit mentions, configured regex triggers, or retry thresholds. This keeps the
-    single-coder fast path cheap while allowing progressively richer intervention after
-    evaluator failures.
-    """
+    """A deterministic, lazy multi-role worker built on the normal Worker boundary."""
 
     def __init__(self, config: TeamConfig, base_worker: WorkerConfig):
         self.config = config
         self.base_worker = base_worker
+        self.role_configs = config.resolved_workers(base_worker)
         self.role_workers: dict[str, Worker] = {
             name: make_worker(worker_config)
-            for name, worker_config in config.resolved_workers(base_worker).items()
+            for name, worker_config in self.role_configs.items()
         }
 
     def plan(self, prompt: str) -> list[tuple[str, str]]:
@@ -77,8 +70,7 @@ class TeamWorker:
                 selected[name] = "deep-retry"
 
         specialists = [
-            name
-            for name in selected
+            name for name in selected
             if name != orchestrator and self.config.roles[name].phase != "coordination"
         ]
         if orchestrator in self.config.roles and self.config.roles[orchestrator].enabled:
@@ -162,6 +154,7 @@ class TeamWorker:
 
         for sequence, (role_name, reason) in enumerate(plan, start=1):
             worker = self.role_workers[role_name]
+            worker_config = self.role_configs[role_name]
             role_prompt = self._role_prompt(role_name, reason, prompt, completed)
             role_started = time.monotonic()
             try:
@@ -177,18 +170,27 @@ class TeamWorker:
                 "duration_ms": duration_ms,
                 "output": result.output[-self.config.max_role_output_chars :],
                 "error": result.error[-self.config.max_role_output_chars :],
-                "metadata": result.metadata,
+                "metadata": {
+                    **result.metadata,
+                    "execution_class": worker_config.execution_class,
+                    "backend": worker_config.backend,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "cost_usd": result.cost_usd,
+                },
             }
             role_runs.append(record)
             completed.append(record)
             if role_name == self.config.primary_role:
                 primary_result = result
 
+        total_duration = time.monotonic() - started
         if primary_result is None:
             return WorkerResult(
                 success=False,
                 error=f"team primary role {self.config.primary_role!r} did not run",
                 metadata={"role_runs": role_runs},
+                duration_seconds=total_duration,
             )
 
         summaries: list[str] = []
@@ -205,18 +207,27 @@ class TeamWorker:
                 "team_roles": [role for role, _ in plan],
                 "role_runs": role_runs,
                 "team_summary": team_summary,
-                "team_duration_ms": int((time.monotonic() - started) * 1000),
+                "team_duration_ms": int(total_duration * 1000),
             }
         )
         usage = _usage_totals(role_runs)
         if usage:
             metadata["team_usage"] = usage
 
+        input_tokens = sum(item.get("metadata", {}).get("input_tokens") or 0 for item in role_runs)
+        output_tokens = sum(item.get("metadata", {}).get("output_tokens") or 0 for item in role_runs)
+        costs = [item.get("metadata", {}).get("cost_usd") for item in role_runs]
+        cost_usd = sum(value for value in costs if isinstance(value, (int, float)))
+
         return WorkerResult(
             success=primary_result.success,
             output=primary_result.output,
             error=primary_result.error,
             metadata=metadata,
+            duration_seconds=total_duration,
+            input_tokens=input_tokens or None,
+            output_tokens=output_tokens or None,
+            cost_usd=cost_usd or None,
         )
 
 

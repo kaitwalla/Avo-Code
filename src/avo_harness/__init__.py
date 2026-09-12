@@ -3,6 +3,7 @@
 from .config import (
     AVOConfig,
     EvaluatorConfig,
+    PlannerConfig,
     RoleConfig,
     SupervisorConfig,
     TeamConfig,
@@ -15,6 +16,7 @@ from .team import TeamWorker
 __all__ = [
     "AVOConfig",
     "EvaluatorConfig",
+    "PlannerConfig",
     "RoleConfig",
     "SupervisorConfig",
     "TeamConfig",

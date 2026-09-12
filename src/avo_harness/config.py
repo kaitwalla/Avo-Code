@@ -15,6 +15,12 @@ Make concrete changes that advance the objective, run relevant tests or checks, 
 all useful modifications in the workspace. Do not merely describe what should be changed.
 Use the supplied memory to avoid repeating failed approaches."""
 
+PLANNER_SYSTEM_PROMPT = """You are the planning agent for a long-horizon coding task.
+Inspect the provided repository workspace but do not rely on making persistent edits. Produce a concise,
+actionable implementation plan for a separate coding worker. Identify likely ownership boundaries,
+important files or subsystems to inspect, validation strategy, sequencing, risks, and the highest-value
+first implementation step. Prefer a plan that helps a smaller local model avoid broad unfocused search."""
+
 SUPERVISOR_SYSTEM_PROMPT = """You supervise a long-horizon coding agent. You do not edit the target repository.
 Study the objective, scores, evaluator feedback, and recent attempt summaries. Identify why
 progress has stalled and return a concise strategic directive for the next worker. Prefer a
@@ -63,6 +69,7 @@ class WorkerConfig:
     mcp: dict[str, Any] | None = None
     skills: dict[str, Any] | None = None
     telemetry: dict[str, Any] | None = None
+    execution_class: str = "local"  # local | cloud
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "WorkerConfig":
@@ -98,6 +105,7 @@ class WorkerOverride:
     mcp: dict[str, Any] | None = None
     skills: dict[str, Any] | None = None
     telemetry: dict[str, Any] | None = None
+    execution_class: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "WorkerOverride":
@@ -109,22 +117,9 @@ class WorkerOverride:
     def apply(self, base: WorkerConfig, *, system_prompt: str | None = None) -> WorkerConfig:
         merged = base.clone()
         scalar_fields = (
-            "backend",
-            "command",
-            "adapter_id",
-            "provider",
-            "model",
-            "api_key_env",
-            "base_url",
-            "temperature",
-            "model_settings",
-            "max_turns",
-            "timeout_seconds",
-            "harness_settings",
-            "tools",
-            "mcp",
-            "skills",
-            "telemetry",
+            "backend", "command", "adapter_id", "provider", "model", "api_key_env",
+            "base_url", "temperature", "model_settings", "max_turns", "timeout_seconds",
+            "harness_settings", "tools", "mcp", "skills", "telemetry", "execution_class",
         )
         for name in scalar_fields:
             value = getattr(self, name)
@@ -149,12 +144,7 @@ class RoleConfig:
     worker: WorkerOverride = field(default_factory=WorkerOverride)
 
     @classmethod
-    def from_dict(
-        cls,
-        raw: dict[str, Any] | None,
-        *,
-        base: "RoleConfig | None" = None,
-    ) -> "RoleConfig":
+    def from_dict(cls, raw: dict[str, Any] | None, *, base: "RoleConfig | None" = None) -> "RoleConfig":
         if base is None:
             base = cls()
         data = {
@@ -185,55 +175,21 @@ def default_team_roles() -> dict[str, RoleConfig]:
             description="Designs interfaces, invariants, and implementation plans.",
             phase="advice",
             system_prompt=ROLE_SYSTEM_PROMPTS["architect"],
-            triggers=[
-                r"\barchitect(?:ure)?\b",
-                r"\bdesign\b",
-                r"\brefactor\b",
-                r"\bmigration\b",
-                r"\bschema\b",
-                r"\binterface\b",
-                r"\bcross[- ]cutting\b",
-                r"\bnew subsystem\b",
-            ],
+            triggers=[r"\barchitect(?:ure)?\b", r"\bdesign\b", r"\brefactor\b", r"\bmigration\b", r"\bschema\b", r"\binterface\b", r"\bcross[- ]cutting\b", r"\bnew subsystem\b"],
             activate_on_retry=True,
         ),
         "researcher": RoleConfig(
             description="Investigates uncertain code, dependencies, APIs, and external behavior.",
             phase="advice",
             system_prompt=ROLE_SYSTEM_PROMPTS["researcher"],
-            triggers=[
-                r"\bresearch\b",
-                r"\bupstream\b",
-                r"\bdocs?\b",
-                r"\bdocumentation\b",
-                r"\bdependency\b",
-                r"\blibrary\b",
-                r"\bunknown behavior\b",
-                r"\bversion(?:s|ed)?\b",
-                r"\brelease(?:s|d)?\b",
-            ],
+            triggers=[r"\bresearch\b", r"\bupstream\b", r"\bdocs?\b", r"\bdocumentation\b", r"\bdependency\b", r"\blibrary\b", r"\bunknown behavior\b", r"\bversion(?:s|ed)?\b", r"\brelease(?:s|d)?\b"],
             activate_on_deep_retry=True,
         ),
         "infrastructure": RoleConfig(
             description="Handles containers, CI, deployment, networking, services, and runtime config.",
             phase="implementation",
             system_prompt=ROLE_SYSTEM_PROMPTS["infrastructure"],
-            triggers=[
-                r"\bdocker(?:file)?\b",
-                r"\bcompose\b",
-                r"\bcontainer(?:s|ized)?\b",
-                r"\bci\b",
-                r"\bpipeline\b",
-                r"\bdeploy(?:ment|ing)?\b",
-                r"\bterraform\b",
-                r"\bkubernetes\b",
-                r"\bk8s\b",
-                r"\bnginx\b",
-                r"\bproxy\b",
-                r"\bnetwork(?:ing)?\b",
-                r"\bsystemd\b",
-                r"\binfrastructure\b",
-            ],
+            triggers=[r"\bdocker(?:file)?\b", r"\bcompose\b", r"\bcontainer(?:s|ized)?\b", r"\bci\b", r"\bpipeline\b", r"\bdeploy(?:ment|ing)?\b", r"\bterraform\b", r"\bkubernetes\b", r"\bk8s\b", r"\bnginx\b", r"\bproxy\b", r"\bnetwork(?:ing)?\b", r"\bsystemd\b", r"\binfrastructure\b"],
         ),
         "coder": RoleConfig(
             description="Primary implementation worker.",
@@ -287,6 +243,19 @@ class EvaluatorConfig:
 
 
 @dataclass(slots=True)
+class PlannerConfig:
+    enabled: bool = False
+    worker: WorkerConfig | None = None
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "PlannerConfig":
+        raw = dict(raw or {})
+        if "worker" in raw and raw["worker"] is not None:
+            raw["worker"] = WorkerConfig.from_dict(raw["worker"])
+        return cls(**raw)
+
+
+@dataclass(slots=True)
 class SupervisorConfig:
     enabled: bool = True
     stagnation_rounds: int = 2
@@ -306,6 +275,8 @@ def _validate_worker(worker: WorkerConfig, label: str) -> None:
         raise ValueError(f"{label}.backend must be 'command' or 'nemo'")
     if worker.backend == "command" and not worker.command:
         raise ValueError(f"command worker requires {label}.command")
+    if worker.execution_class not in {"local", "cloud"}:
+        raise ValueError(f"{label}.execution_class must be 'local' or 'cloud'")
     if worker.max_turns < 1:
         raise ValueError(f"{label}.max_turns must be >= 1")
     if worker.timeout_seconds < 1:
@@ -317,6 +288,7 @@ class AVOConfig:
     repo: str
     worker: WorkerConfig
     evaluators: list[EvaluatorConfig]
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     team: TeamConfig = field(default_factory=TeamConfig)
     state_dir: str = "~/.local/state/avo-harness"
@@ -327,6 +299,7 @@ class AVOConfig:
     keep_worktrees: bool = False
     allow_dirty_repo: bool = False
     result_branch_prefix: str = "avo"
+    cloud_assist_budget: int | None = 2
 
     @property
     def repo_path(self) -> Path:
@@ -341,7 +314,11 @@ class AVOConfig:
             raise ValueError("max_iterations must be >= 1")
         if not self.evaluators:
             raise ValueError("at least one evaluator is required")
+        if self.cloud_assist_budget is not None and self.cloud_assist_budget < 0:
+            raise ValueError("cloud_assist_budget must be >= 0 or null")
         _validate_worker(self.worker, "worker")
+        if self.planner.worker is not None:
+            _validate_worker(self.planner.worker, "planner.worker")
         if self.supervisor.worker is not None:
             _validate_worker(self.supervisor.worker, "supervisor.worker")
         if self.supervisor.stagnation_rounds < 1:
@@ -378,6 +355,7 @@ class AVOConfig:
         raw = dict(raw)
         raw["worker"] = WorkerConfig.from_dict(raw.get("worker"))
         raw["evaluators"] = [EvaluatorConfig.from_dict(x) for x in raw.get("evaluators", [])]
+        raw["planner"] = PlannerConfig.from_dict(raw.get("planner"))
         raw["supervisor"] = SupervisorConfig.from_dict(raw.get("supervisor"))
         raw["team"] = TeamConfig.from_dict(raw.get("team"))
         config = cls(**raw)
@@ -402,34 +380,19 @@ def example_config(repo: str = ".") -> dict[str, Any]:
         "min_improvement": 0.001,
         "memory_window": 6,
         "keep_worktrees": False,
+        "cloud_assist_budget": 2,
         "worker": {
             "backend": "nemo",
             "adapter_id": "nvidia.fabric.hermes",
-            "provider": "nvidia",
-            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-            "api_key_env": "NVIDIA_API_KEY",
-            "base_url": "https://integrate.api.nvidia.com/v1",
+            "provider": "openai",
+            "model": "local-open-model",
+            "base_url": "http://127.0.0.1:8000/v1",
             "max_turns": 24,
             "timeout_seconds": 3600,
-            "harness_settings": {},
-            "tools": None,
-            "mcp": None,
-            "skills": None,
+            "execution_class": "local",
         },
-        "team": {
-            "enabled": False,
-            "mode": "lazy",
-            "retry_after_iteration": 2,
-            "deep_retry_after_iteration": 3,
-            "orchestrate_after_iteration": 2,
-            "roles": {
-                "architect": {"worker": {}},
-                "researcher": {"worker": {}},
-                "coder": {"worker": {}},
-                "infrastructure": {"worker": {}},
-                "orchestrator": {"worker": {}},
-            },
-        },
+        "planner": {"enabled": False},
+        "team": {"enabled": False},
         "supervisor": {
             "enabled": True,
             "stagnation_rounds": 2,
