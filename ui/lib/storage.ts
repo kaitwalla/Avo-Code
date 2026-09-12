@@ -22,7 +22,7 @@ async function setValue(key: string, value: string): Promise<void> {
 
 export async function loadConnection() {
   return {
-    apiUrl: (await getValue(API_URL_KEY)) ?? 'http://127.0.0.1:8765',
+    apiUrl: (await getValue(API_URL_KEY)) ?? 'https://avo.penginlab.com',
     token: (await getValue(TOKEN_KEY)) ?? '',
   };
 }
