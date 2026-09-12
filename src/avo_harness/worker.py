@@ -35,6 +35,49 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _number(mapping: dict[str, Any], *names: str) -> float | None:
+    for name in names:
+        value = mapping.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None, dict[str, Any] | None]:
+    raw = _jsonable(value)
+    if not isinstance(raw, dict):
+        return None, None, None, raw if raw is not None else None
+
+    # NeMo adapters/providers do not all use the same field names. Prefer the
+    # normalized names, then accept common OpenAI/LangChain aliases.
+    input_tokens = _number(raw, "input_tokens", "prompt_tokens", "input")
+    output_tokens = _number(raw, "output_tokens", "completion_tokens", "output")
+    cost = _number(raw, "cost_usd", "total_cost_usd", "cost")
+
+    # Some providers wrap usage in a nested token_usage/usage object.
+    if input_tokens is None or output_tokens is None or cost is None:
+        for key in ("token_usage", "usage", "tokens"):
+            nested = raw.get(key)
+            if not isinstance(nested, dict):
+                continue
+            input_tokens = input_tokens if input_tokens is not None else _number(
+                nested, "input_tokens", "prompt_tokens", "input"
+            )
+            output_tokens = output_tokens if output_tokens is not None else _number(
+                nested, "output_tokens", "completion_tokens", "output"
+            )
+            cost = cost if cost is not None else _number(
+                nested, "cost_usd", "total_cost_usd", "cost"
+            )
+
+    return (
+        int(input_tokens) if input_tokens is not None else None,
+        int(output_tokens) if output_tokens is not None else None,
+        float(cost) if cost is not None else None,
+        raw,
+    )
+
+
 class CommandWorker:
     def __init__(self, config: WorkerConfig):
         self.config = config
@@ -181,9 +224,11 @@ class NeMoWorker:
             "adapter_id": self.config.adapter_id,
             "backend": "nemo",
         }
-        usage = getattr(result, "usage", None)
+        input_tokens, output_tokens, cost_usd, usage = _normalized_usage(
+            getattr(result, "usage", None)
+        )
         if usage is not None:
-            metadata["usage"] = _jsonable(usage)
+            metadata["usage"] = usage
         telemetry = getattr(result, "telemetry", None)
         if telemetry is not None:
             metadata["telemetry"] = _jsonable(telemetry)
@@ -198,6 +243,9 @@ class NeMoWorker:
             output=str(response or ""),
             error="" if error_obj is None else str(error_obj),
             metadata=metadata,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
         )
 
 
