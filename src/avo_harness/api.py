@@ -27,6 +27,69 @@ def _json(value: str | None, default: Any) -> Any:
         return default
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _policy_variant(policy: dict[str, Any]) -> str | None:
+    default = policy.get("default")
+    if isinstance(default, dict) and default.get("variant"):
+        return str(default["variant"])
+    return None
+
+
+def _benchmark_entries(root: Path) -> list[dict[str, Any]]:
+    if not root.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for report_path in root.rglob("report.json"):
+        report = _read_json(report_path)
+        if not report:
+            continue
+        folder = report_path.parent
+        try:
+            benchmark_id = folder.relative_to(root).as_posix() or "."
+        except ValueError:
+            continue
+        policy = _read_json(folder / "routing-policy.json")
+        if not policy:
+            embedded = report.get("routing_policy")
+            policy = embedded if isinstance(embedded, dict) else {}
+        stat = report_path.stat()
+        variants = report.get("variants", {})
+        trials = report.get("trials", [])
+        entries.append(
+            {
+                "id": benchmark_id,
+                "experiment": str(report.get("experiment") or folder.name),
+                "updated_at": stat.st_mtime,
+                "variant_count": len(variants) if isinstance(variants, dict) else 0,
+                "trial_count": len(trials) if isinstance(trials, list) else 0,
+                "default_strategy": _policy_variant(policy),
+            }
+        )
+    return sorted(entries, key=lambda item: float(item["updated_at"]), reverse=True)
+
+
+def _benchmark_detail(root: Path, benchmark_id: str) -> dict[str, Any] | None:
+    candidate = (root / benchmark_id).resolve()
+    resolved_root = root.resolve()
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        return None
+    report = _read_json(candidate / "report.json")
+    if not report:
+        return None
+    policy = _read_json(candidate / "routing-policy.json")
+    if not policy:
+        embedded = report.get("routing_policy")
+        policy = embedded if isinstance(embedded, dict) else {}
+    return {"id": benchmark_id, "report": report, "routing_policy": policy}
+
+
 def create_app(config_path: str = "avo.json"):
     try:
         from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -38,6 +101,9 @@ def create_app(config_path: str = "avo.json"):
     config_file = Path(config_path).expanduser().resolve()
     config = AVOConfig.load(config_file)
     db_path = config.state_path / "state.sqlite3"
+    benchmark_root = Path(
+        os.environ.get("AVO_BENCHMARK_ROOT", str(config_file.parent / "benchmarks"))
+    ).expanduser().resolve()
     token = os.environ.get("AVO_WEB_TOKEN", "")
 
     class RunRequest(BaseModel):
@@ -105,7 +171,12 @@ def create_app(config_path: str = "avo.json"):
 
     @app.get("/api/health")
     def health(_: None = Depends(authorize)) -> dict[str, Any]:
-        return {"ok": True, "state_dir": str(config.state_path), "auth": bool(token)}
+        return {
+            "ok": True,
+            "state_dir": str(config.state_path),
+            "benchmark_root": str(benchmark_root),
+            "auth": bool(token),
+        }
 
     @app.get("/api/runs")
     def list_runs(limit: int = Query(default=50, ge=1, le=250), _: None = Depends(authorize)):
@@ -134,6 +205,17 @@ def create_app(config_path: str = "avo.json"):
             start_new_session=True,
         )
         return {"accepted": True, "pid": proc.pid}
+
+    @app.get("/api/benchmarks")
+    def list_benchmarks(_: None = Depends(authorize)) -> list[dict[str, Any]]:
+        return _benchmark_entries(benchmark_root)
+
+    @app.get("/api/benchmarks/{benchmark_id:path}")
+    def get_benchmark(benchmark_id: str, _: None = Depends(authorize)) -> dict[str, Any]:
+        result = _benchmark_detail(benchmark_root, benchmark_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="benchmark report not found")
+        return result
 
     @app.websocket("/api/ws")
     async def websocket(websocket: WebSocket, access_token: str | None = Query(default=None)):
