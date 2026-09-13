@@ -117,6 +117,7 @@ def _static_root() -> Path:
 def create_app(config_path: str = "avo.json"):
     try:
         from fastapi import (
+            Body,
             Cookie,
             Depends,
             FastAPI,
@@ -129,7 +130,6 @@ def create_app(config_path: str = "avo.json"):
         )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, JSONResponse
-        from pydantic import BaseModel
     except ImportError as exc:
         raise RuntimeError("Web UI dependencies are missing; install avo-harness[web]") from exc
 
@@ -147,21 +147,6 @@ def create_app(config_path: str = "avo.json"):
     auth_disabled = os.environ.get("AVO_AUTH_DISABLED", "").lower() in {"1", "true", "yes"}
     auth_store = AuthStore(db_path)
     passkeys = PasskeyAuth(auth_store, rp_id=rp_id, origin=origin)
-
-    class RunRequest(BaseModel):
-        objective: str
-
-    class BootstrapRequest(BaseModel):
-        code: str
-
-    class RegistrationVerifyRequest(BaseModel):
-        challenge_id: str
-        credential: dict[str, Any]
-        code: str | None = None
-
-    class AuthenticationVerifyRequest(BaseModel):
-        challenge_id: str
-        credential: dict[str, Any]
 
     app = FastAPI(title="Avo-Code API", version="1")
 
@@ -255,6 +240,18 @@ def create_app(config_path: str = "avo.json"):
             payload["token"] = session.token
         return payload
 
+    def require_string(payload: dict[str, Any], key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"{key} is required")
+        return value.strip()
+
+    def require_credential(payload: dict[str, Any]) -> dict[str, Any]:
+        value = payload.get("credential")
+        if not isinstance(value, dict):
+            raise HTTPException(status_code=400, detail="credential is required")
+        return value
+
     @app.get("/.well-known/apple-app-site-association", include_in_schema=False)
     def apple_app_site_association():
         apps = [f"{apple_team_id}.{apple_bundle_id}"] if apple_team_id else []
@@ -277,21 +274,25 @@ def create_app(config_path: str = "avo.json"):
         }
 
     @app.post("/api/auth/bootstrap/options")
-    def bootstrap_options(request: BootstrapRequest) -> dict[str, Any]:
-        if not auth_store.validate_bootstrap(request.code):
+    def bootstrap_options(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        code = require_string(payload, "code")
+        if not auth_store.validate_bootstrap(code):
             raise HTTPException(status_code=403, detail="invalid or expired enrollment code")
         return passkeys.registration_options()
 
     @app.post("/api/auth/bootstrap/verify")
     def bootstrap_verify(
-        request: RegistrationVerifyRequest,
         response: Response,
+        payload: dict[str, Any] = Body(...),
         x_avo_client: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        if not request.code or not auth_store.validate_bootstrap(request.code):
+        code = require_string(payload, "code")
+        challenge_id = require_string(payload, "challenge_id")
+        credential = require_credential(payload)
+        if not auth_store.validate_bootstrap(code):
             raise HTTPException(status_code=403, detail="invalid or expired enrollment code")
         try:
-            passkeys.verify_registration(request.challenge_id, request.credential)
+            passkeys.verify_registration(challenge_id, credential)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"passkey registration failed: {exc}") from exc
         auth_store.consume_bootstrap()
@@ -306,12 +307,14 @@ def create_app(config_path: str = "avo.json"):
 
     @app.post("/api/auth/login/verify")
     def login_verify(
-        request: AuthenticationVerifyRequest,
         response: Response,
+        payload: dict[str, Any] = Body(...),
         x_avo_client: str | None = Header(default=None),
     ) -> dict[str, Any]:
+        challenge_id = require_string(payload, "challenge_id")
+        credential = require_credential(payload)
         try:
-            passkeys.verify_authentication(request.challenge_id, request.credential)
+            passkeys.verify_authentication(challenge_id, credential)
         except Exception as exc:
             raise HTTPException(status_code=401, detail=f"passkey authentication failed: {exc}") from exc
         return issue_session(response, x_avo_client == "native")
@@ -322,11 +325,13 @@ def create_app(config_path: str = "avo.json"):
 
     @app.post("/api/auth/register/verify")
     def register_verify(
-        request: RegistrationVerifyRequest,
+        payload: dict[str, Any] = Body(...),
         _: str = Depends(authorize),
     ) -> dict[str, Any]:
+        challenge_id = require_string(payload, "challenge_id")
+        credential = require_credential(payload)
         try:
-            credential_id = passkeys.verify_registration(request.challenge_id, request.credential)
+            credential_id = passkeys.verify_registration(challenge_id, credential)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"passkey registration failed: {exc}") from exc
         return {"ok": True, "credential_id": credential_id}
@@ -379,10 +384,8 @@ def create_app(config_path: str = "avo.json"):
         return result
 
     @app.post("/api/runs", status_code=202)
-    def start_run(request: RunRequest, _: str = Depends(authorize)):
-        objective = request.objective.strip()
-        if not objective:
-            raise HTTPException(status_code=400, detail="objective is required")
+    def start_run(payload: dict[str, Any] = Body(...), _: str = Depends(authorize)):
+        objective = require_string(payload, "objective")
         proc = subprocess.Popen(
             [sys.executable, "-m", "avo_harness", "run", objective, "-c", str(config_file)],
             cwd=config.repo_path,
