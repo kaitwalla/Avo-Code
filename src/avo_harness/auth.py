@@ -40,149 +40,156 @@ class SessionInfo:
 
 
 class AuthStore:
+    """Small auth store backed by the same SQLite file as Avo state.
+
+    Connections are intentionally short-lived. FastAPI executes synchronous route
+    handlers in a thread pool, so retaining one sqlite3 connection on the app object
+    would violate SQLite's default same-thread contract under real request traffic.
+    """
+
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.db = sqlite3.connect(path)
-        self.db.row_factory = sqlite3.Row
         self._init_schema()
 
+    def _connect(self) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path, timeout=10.0)
+        db.row_factory = sqlite3.Row
+        return db
+
     def close(self) -> None:
-        self.db.close()
+        # Kept for the same lifecycle shape as Store; connections are per operation.
+        return None
 
     def _init_schema(self) -> None:
-        self.db.executescript(
-            """
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS auth_credentials (
-                credential_id TEXT PRIMARY KEY,
-                public_key BLOB NOT NULL,
-                sign_count INTEGER NOT NULL,
-                transports_json TEXT NOT NULL,
-                device_type TEXT NOT NULL,
-                backed_up INTEGER NOT NULL,
-                label TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_used_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS auth_challenges (
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                challenge BLOB NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token_hash TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS auth_bootstrap (
-                id INTEGER PRIMARY KEY CHECK(id = 1),
-                code_hash TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS auth_meta (
-                key TEXT PRIMARY KEY,
-                value BLOB NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_auth_challenges_expires
-              ON auth_challenges(expires_at);
-            CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires
-              ON auth_sessions(expires_at);
-            """
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS auth_credentials (
+                    credential_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    sign_count INTEGER NOT NULL,
+                    transports_json TEXT NOT NULL,
+                    device_type TEXT NOT NULL,
+                    backed_up INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS auth_challenges (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    challenge BLOB NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS auth_bootstrap (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    code_hash TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS auth_meta (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_auth_challenges_expires
+                  ON auth_challenges(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires
+                  ON auth_sessions(expires_at);
+                """
+            )
 
     def credential_count(self) -> int:
-        row = self.db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
-        return int(row["n"] if row else 0)
+        with self._connect() as db:
+            row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
+            return int(row["n"] if row else 0)
 
     def list_credentials(self) -> list[sqlite3.Row]:
-        return list(
-            self.db.execute(
-                "SELECT * FROM auth_credentials ORDER BY created_at"
-            ).fetchall()
-        )
+        with self._connect() as db:
+            return list(db.execute("SELECT * FROM auth_credentials ORDER BY created_at").fetchall())
 
     def credential(self, credential_id: str) -> sqlite3.Row | None:
-        return self.db.execute(
-            "SELECT * FROM auth_credentials WHERE credential_id=?", (credential_id,)
-        ).fetchone()
+        with self._connect() as db:
+            return db.execute(
+                "SELECT * FROM auth_credentials WHERE credential_id=?", (credential_id,)
+            ).fetchone()
 
     def owner_handle(self) -> bytes:
-        row = self.db.execute(
-            "SELECT value FROM auth_meta WHERE key='owner_handle'"
-        ).fetchone()
-        if row is not None:
-            return bytes(row["value"])
-        value = secrets.token_bytes(32)
-        self.db.execute(
-            "INSERT INTO auth_meta(key, value) VALUES('owner_handle', ?)", (value,)
-        )
-        self.db.commit()
-        return value
+        with self._connect() as db:
+            row = db.execute("SELECT value FROM auth_meta WHERE key='owner_handle'").fetchone()
+            if row is not None:
+                return bytes(row["value"])
+            value = secrets.token_bytes(32)
+            db.execute("INSERT INTO auth_meta(key, value) VALUES('owner_handle', ?)", (value,))
+            return value
 
     def issue_bootstrap_code(self, ttl_minutes: int = 10) -> tuple[str, str]:
-        if self.credential_count() > 0:
-            raise RuntimeError("a passkey already exists; add additional passkeys while signed in")
-        raw = secrets.token_hex(8).upper()
-        code = "-".join(raw[index:index + 4] for index in range(0, len(raw), 4))
-        expires = _now() + timedelta(minutes=ttl_minutes)
-        self.db.execute(
-            """INSERT INTO auth_bootstrap(id, code_hash, expires_at, used_at)
-               VALUES(1, ?, ?, NULL)
-               ON CONFLICT(id) DO UPDATE SET
-                 code_hash=excluded.code_hash,
-                 expires_at=excluded.expires_at,
-                 used_at=NULL""",
-            (_hash(code), _iso(expires)),
-        )
-        self.db.commit()
-        return code, _iso(expires)
+        with self._connect() as db:
+            row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
+            if row and int(row["n"] or 0) > 0:
+                raise RuntimeError("a passkey already exists; add additional passkeys while signed in")
+            raw = secrets.token_hex(8).upper()
+            code = "-".join(raw[index:index + 4] for index in range(0, len(raw), 4))
+            expires = _now() + timedelta(minutes=ttl_minutes)
+            db.execute(
+                """INSERT INTO auth_bootstrap(id, code_hash, expires_at, used_at)
+                   VALUES(1, ?, ?, NULL)
+                   ON CONFLICT(id) DO UPDATE SET
+                     code_hash=excluded.code_hash,
+                     expires_at=excluded.expires_at,
+                     used_at=NULL""",
+                (_hash(code), _iso(expires)),
+            )
+            return code, _iso(expires)
 
     def validate_bootstrap(self, code: str) -> bool:
-        if self.credential_count() > 0:
-            return False
-        row = self.db.execute("SELECT * FROM auth_bootstrap WHERE id=1").fetchone()
-        if row is None or row["used_at"] is not None:
-            return False
-        if _parse(str(row["expires_at"])) <= _now():
-            return False
-        return hmac.compare_digest(str(row["code_hash"]), _hash(code.strip().upper()))
+        with self._connect() as db:
+            credential_row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
+            if credential_row and int(credential_row["n"] or 0) > 0:
+                return False
+            row = db.execute("SELECT * FROM auth_bootstrap WHERE id=1").fetchone()
+            if row is None or row["used_at"] is not None:
+                return False
+            if _parse(str(row["expires_at"])) <= _now():
+                return False
+            return hmac.compare_digest(str(row["code_hash"]), _hash(code.strip().upper()))
 
     def consume_bootstrap(self) -> None:
-        self.db.execute(
-            "UPDATE auth_bootstrap SET used_at=? WHERE id=1", (_iso(_now()),)
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.execute("UPDATE auth_bootstrap SET used_at=? WHERE id=1", (_iso(_now()),))
 
     def create_challenge(self, kind: str, challenge: bytes, ttl_minutes: int = 5) -> str:
         challenge_id = uuid.uuid4().hex
-        self.db.execute(
-            "INSERT INTO auth_challenges(id, kind, challenge, expires_at, used_at) VALUES(?, ?, ?, ?, NULL)",
-            (challenge_id, kind, challenge, _iso(_now() + timedelta(minutes=ttl_minutes))),
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO auth_challenges(id, kind, challenge, expires_at, used_at) VALUES(?, ?, ?, ?, NULL)",
+                (challenge_id, kind, challenge, _iso(_now() + timedelta(minutes=ttl_minutes))),
+            )
         return challenge_id
 
     def consume_challenge(self, challenge_id: str, kind: str) -> bytes:
-        row = self.db.execute(
-            "SELECT * FROM auth_challenges WHERE id=? AND kind=?",
-            (challenge_id, kind),
-        ).fetchone()
-        if row is None or row["used_at"] is not None:
-            raise ValueError("authentication challenge is invalid or already used")
-        if _parse(str(row["expires_at"])) <= _now():
-            raise ValueError("authentication challenge expired")
-        self.db.execute(
-            "UPDATE auth_challenges SET used_at=? WHERE id=?",
-            (_iso(_now()), challenge_id),
-        )
-        self.db.commit()
-        return bytes(row["challenge"])
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM auth_challenges WHERE id=? AND kind=?",
+                (challenge_id, kind),
+            ).fetchone()
+            if row is None or row["used_at"] is not None:
+                raise ValueError("authentication challenge is invalid or already used")
+            if _parse(str(row["expires_at"])) <= _now():
+                raise ValueError("authentication challenge expired")
+            db.execute(
+                "UPDATE auth_challenges SET used_at=? WHERE id=?",
+                (_iso(_now()), challenge_id),
+            )
+            return bytes(row["challenge"])
 
     def add_credential(
         self,
@@ -195,71 +202,68 @@ class AuthStore:
         backed_up: bool,
         label: str = "Passkey",
     ) -> None:
-        self.db.execute(
-            """INSERT INTO auth_credentials
-               (credential_id, public_key, sign_count, transports_json, device_type,
-                backed_up, label, created_at, last_used_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
-            (
-                credential_id,
-                public_key,
-                sign_count,
-                json.dumps(transports),
-                device_type,
-                int(backed_up),
-                label,
-                _iso(_now()),
-            ),
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO auth_credentials
+                   (credential_id, public_key, sign_count, transports_json, device_type,
+                    backed_up, label, created_at, last_used_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                (
+                    credential_id,
+                    public_key,
+                    sign_count,
+                    json.dumps(transports),
+                    device_type,
+                    int(backed_up),
+                    label,
+                    _iso(_now()),
+                ),
+            )
 
     def update_credential_use(
         self, credential_id: str, *, sign_count: int, device_type: str, backed_up: bool
     ) -> None:
-        self.db.execute(
-            """UPDATE auth_credentials SET sign_count=?, device_type=?, backed_up=?, last_used_at=?
-               WHERE credential_id=?""",
-            (sign_count, device_type, int(backed_up), _iso(_now()), credential_id),
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.execute(
+                """UPDATE auth_credentials SET sign_count=?, device_type=?, backed_up=?, last_used_at=?
+                   WHERE credential_id=?""",
+                (sign_count, device_type, int(backed_up), _iso(_now()), credential_id),
+            )
 
     def issue_session(self, ttl_days: int = 30) -> SessionInfo:
         raw = secrets.token_urlsafe(48)
         now = _now()
         expires = now + timedelta(days=ttl_days)
-        self.db.execute(
-            "INSERT INTO auth_sessions(token_hash, created_at, expires_at, last_seen_at) VALUES(?, ?, ?, ?)",
-            (_hash(raw), _iso(now), _iso(expires), _iso(now)),
-        )
-        self.db.commit()
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO auth_sessions(token_hash, created_at, expires_at, last_seen_at) VALUES(?, ?, ?, ?)",
+                (_hash(raw), _iso(now), _iso(expires), _iso(now)),
+            )
         return SessionInfo(token=raw, expires_at=_iso(expires))
 
     def validate_session(self, token: str | None, ttl_days: int = 30) -> bool:
         if not token:
             return False
         digest = _hash(token)
-        row = self.db.execute(
-            "SELECT * FROM auth_sessions WHERE token_hash=?", (digest,)
-        ).fetchone()
-        if row is None:
-            return False
-        now = _now()
-        if _parse(str(row["expires_at"])) <= now:
-            self.db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (digest,))
-            self.db.commit()
-            return False
-        self.db.execute(
-            "UPDATE auth_sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?",
-            (_iso(now), _iso(now + timedelta(days=ttl_days)), digest),
-        )
-        self.db.commit()
-        return True
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM auth_sessions WHERE token_hash=?", (digest,)).fetchone()
+            if row is None:
+                return False
+            now = _now()
+            if _parse(str(row["expires_at"])) <= now:
+                db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (digest,))
+                return False
+            db.execute(
+                "UPDATE auth_sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?",
+                (_iso(now), _iso(now + timedelta(days=ttl_days)), digest),
+            )
+            return True
 
     def revoke_session(self, token: str | None) -> None:
         if not token:
             return
-        self.db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (_hash(token),))
-        self.db.commit()
+        with self._connect() as db:
+            db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (_hash(token),))
 
 
 class PasskeyAuth:
