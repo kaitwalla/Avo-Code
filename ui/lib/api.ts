@@ -1,4 +1,5 @@
-import { loadConnection } from './storage';
+import { Platform } from 'react-native';
+import { apiBaseUrl, loadSessionToken } from './storage';
 
 export type RunSummary = {
   id: string;
@@ -66,25 +67,84 @@ export type BenchmarkDetail = {
   };
 };
 
+export type AuthStatus = {
+  authenticated: boolean;
+  bootstrap_required: boolean;
+  passkey_count: number;
+  rp_id: string;
+  auth_disabled: boolean;
+};
+
+export type PasskeyCredential = {
+  id: string;
+  label: string;
+  device_type: string;
+  backed_up: boolean;
+  created_at: string;
+  last_used_at?: string | null;
+};
+
+export type CeremonyOptions = {
+  challenge_id: string;
+  options: Record<string, unknown>;
+};
+
+export type SessionResponse = {
+  ok: boolean;
+  expires_at: string;
+  token?: string;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const { apiUrl, token } = await loadConnection();
-  const response = await fetch(`${apiUrl}${path}`, {
+  const token = await loadSessionToken();
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
+    credentials: Platform.OS === 'web' ? 'include' : init?.credentials,
     headers: {
       'Content-Type': 'application/json',
+      ...(Platform.OS !== 'web' ? { 'X-Avo-Client': 'native' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Avo API returned ${response.status}`);
+    let message = '';
+    try {
+      const payload = await response.json() as { detail?: string };
+      message = payload.detail || JSON.stringify(payload);
+    } catch {
+      message = await response.text();
+    }
+    const error = new Error(message || `Avo API returned ${response.status}`);
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
   }
   return response.json() as Promise<T>;
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; auth: boolean; benchmark_root?: string }>('/api/health'),
+  authStatus: () => request<AuthStatus>('/api/auth/status'),
+  bootstrapOptions: (code: string) => request<CeremonyOptions>('/api/auth/bootstrap/options', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  }),
+  bootstrapVerify: (code: string, challengeId: string, credential: Record<string, unknown>) => request<SessionResponse>('/api/auth/bootstrap/verify', {
+    method: 'POST',
+    body: JSON.stringify({ code, challenge_id: challengeId, credential }),
+  }),
+  loginOptions: () => request<CeremonyOptions>('/api/auth/login/options', { method: 'POST' }),
+  loginVerify: (challengeId: string, credential: Record<string, unknown>) => request<SessionResponse>('/api/auth/login/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challenge_id: challengeId, credential }),
+  }),
+  registerOptions: () => request<CeremonyOptions>('/api/auth/register/options', { method: 'POST' }),
+  registerVerify: (challengeId: string, credential: Record<string, unknown>) => request<{ ok: boolean; credential_id: string }>('/api/auth/register/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challenge_id: challengeId, credential }),
+  }),
+  credentials: () => request<PasskeyCredential[]>('/api/auth/credentials'),
+  logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  health: () => request<{ ok: boolean; benchmark_root?: string; rp_id?: string; static_web?: boolean }>('/api/health'),
   runs: () => request<RunSummary[]>('/api/runs'),
   run: (id: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
   start: (objective: string) => request<{ accepted: boolean; pid: number }>('/api/runs', {
