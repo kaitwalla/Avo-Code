@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .auth import AuthStore
 from .avogym import BenchmarkRunner, ExperimentSpec, write_report, write_strategy_policy
 from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
@@ -128,6 +129,24 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth_bootstrap(args: argparse.Namespace) -> int:
+    config = _load(args.config)
+    store = AuthStore(config.state_path / "state.sqlite3")
+    try:
+        try:
+            code, expires_at = store.issue_bootstrap_code(ttl_minutes=args.minutes)
+        except RuntimeError as exc:
+            print(f"FAIL: {exc}", file=sys.stderr)
+            return 1
+        print("Avo passkey enrollment code")
+        print(code)
+        print(f"Expires: {expires_at}")
+        print("Open the Avo web/iOS app and use this code once to create the first passkey.")
+        return 0
+    finally:
+        store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="avo-harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -159,12 +178,19 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("-o", "--output", default="avogym-report")
     benchmark.set_defaults(func=cmd_benchmark)
 
-    web = sub.add_parser("web", help="serve the web/iOS API")
+    web = sub.add_parser("web", help="serve the unified web/iOS control plane")
     web.add_argument("-c", "--config", default="avo.json")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8765)
     web.add_argument("--log-level", default="info")
     web.set_defaults(func=cmd_web)
+
+    auth = sub.add_parser("auth", help="manage single-user passkey authentication")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    bootstrap = auth_sub.add_parser("bootstrap", help="issue a one-time first-passkey enrollment code")
+    bootstrap.add_argument("-c", "--config", default="avo.json")
+    bootstrap.add_argument("--minutes", type=int, default=10, help="enrollment code lifetime")
+    bootstrap.set_defaults(func=cmd_auth_bootstrap)
     return parser
 
 

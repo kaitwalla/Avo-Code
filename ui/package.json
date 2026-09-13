@@ -1,6 +1,6 @@
 {
   "name": "avo-ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -13,12 +13,14 @@
   "dependencies": {
     "@expo/vector-icons": "*",
     "expo": "^57.0.17",
+    "expo-build-properties": "~57.0.17",
     "expo-router": "~57.0.20",
     "expo-secure-store": "*",
     "expo-status-bar": "*",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-passkeys": "^0.4.2",
     "react-native-safe-area-context": "*",
     "react-native-screens": "*",
     "react-native-web": "0.21.0"

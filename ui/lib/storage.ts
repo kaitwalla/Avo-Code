@@ -1,33 +1,23 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
-const API_URL_KEY = 'avo.apiUrl';
-const TOKEN_KEY = 'avo.token';
+const SESSION_TOKEN_KEY = 'avo.sessionToken';
 
-async function getValue(key: string): Promise<string | null> {
-  if (Platform.OS === 'web') {
-    if (typeof window === 'undefined') return null;
-    return window.localStorage.getItem(key);
-  }
-  return SecureStore.getItemAsync(key);
+export function apiBaseUrl(): string {
+  if (Platform.OS === 'web') return '';
+  return (process.env.EXPO_PUBLIC_AVO_API_URL || 'https://avo.penginlab.com').replace(/\/$/, '');
 }
 
-async function setValue(key: string, value: string): Promise<void> {
-  if (Platform.OS === 'web') {
-    window.localStorage.setItem(key, value);
+export async function loadSessionToken(): Promise<string> {
+  if (Platform.OS === 'web') return '';
+  return (await SecureStore.getItemAsync(SESSION_TOKEN_KEY)) ?? '';
+}
+
+export async function saveSessionToken(token: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  if (!token) {
+    await SecureStore.deleteItemAsync(SESSION_TOKEN_KEY);
     return;
   }
-  await SecureStore.setItemAsync(key, value);
-}
-
-export async function loadConnection() {
-  return {
-    apiUrl: (await getValue(API_URL_KEY)) ?? 'https://avo.penginlab.com',
-    token: (await getValue(TOKEN_KEY)) ?? '',
-  };
-}
-
-export async function saveConnection(apiUrl: string, token: string) {
-  await setValue(API_URL_KEY, apiUrl.replace(/\/$/, ''));
-  await setValue(TOKEN_KEY, token);
+  await SecureStore.setItemAsync(SESSION_TOKEN_KEY, token);
 }

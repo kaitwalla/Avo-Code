@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avo-harness"
-version = "0.3.0"
+version = "0.4.0"
 description = "Unofficial long-horizon agent orchestration inspired by NVIDIA AVO"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,8 +16,8 @@ nemo = ["nemo-fabric>=0.2,<0.3"]
 deepagents = ["nemo-fabric[deepagents]>=0.2,<0.3"]
 codex = ["nemo-fabric[codex]>=0.2,<0.3"]
 claude = ["nemo-fabric[claude]>=0.2,<0.3"]
-web = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1"]
-dev = ["pytest>=8", "fastapi>=0.115,<1", "httpx>=0.28,<1"]
+web = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "webauthn>=3,<4"]
+dev = ["pytest>=8", "fastapi>=0.115,<1", "httpx>=0.28,<1", "webauthn>=3,<4"]
 
 [project.scripts]
 avo-harness = "avo_harness.cli:main"

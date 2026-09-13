@@ -1,29 +1,52 @@
-import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { api } from '@/lib/api';
-import { loadConnection, saveConnection } from '@/lib/storage';
+import { useCallback, useState } from 'react';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { api, AuthStatus, PasskeyCredential } from '@/lib/api';
+import { addPasskey, signOut } from '@/lib/auth';
+import { apiBaseUrl } from '@/lib/storage';
 import { Card, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/lib/theme';
 
 export default function SettingsScreen() {
-  const [apiUrl, setApiUrl] = useState('');
-  const [token, setToken] = useState('');
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [credentials, setCredentials] = useState<PasskeyCredential[]>([]);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    void loadConnection().then((value) => {
-      setApiUrl(value.apiUrl);
-      setToken(value.token);
-    });
+  const load = useCallback(async () => {
+    try {
+      const [nextStatus, nextCredentials] = await Promise.all([api.authStatus(), api.credentials()]);
+      setStatus(nextStatus);
+      setCredentials(nextCredentials);
+      setMessage('');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
-  const save = async () => {
-    await saveConnection(apiUrl.trim(), token.trim());
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
+
+  const add = async () => {
+    setBusy(true);
+    setMessage('');
     try {
-      const health = await api.health();
-      setStatus(`Connected · auth ${health.auth ? 'enabled' : 'disabled'}`);
+      await addPasskey();
+      await load();
+      setMessage('Passkey added.');
     } catch (err) {
-      setStatus(err instanceof Error ? `Saved, but connection failed: ${err.message}` : 'Saved, but connection failed');
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    setBusy(true);
+    try {
+      await signOut();
+      router.replace('/login');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -31,21 +54,46 @@ export default function SettingsScreen() {
     <Screen>
       <ScrollView contentContainerStyle={styles.shell}>
         <View style={styles.header}>
-          <Text style={styles.title}>Connection</Text>
-          <Text style={styles.subtitle}>One Avo backend serves both the responsive web app and the native iOS app.</Text>
+          <Text style={styles.title}>Security</Text>
+          <Text style={styles.subtitle}>Avo is single-user. Passkeys are the account.</Text>
         </View>
-        <Card style={styles.form}>
-          <SectionTitle>Backend</SectionTitle>
-          <Text style={styles.label}>API URL</Text>
-          <TextInput autoCapitalize="none" autoCorrect={false} value={apiUrl} onChangeText={setApiUrl} style={styles.input} placeholder="https://avo.example.com" placeholderTextColor={palette.muted} />
-          <Text style={styles.label}>API token</Text>
-          <TextInput autoCapitalize="none" autoCorrect={false} secureTextEntry value={token} onChangeText={setToken} style={styles.input} placeholder="Optional when AVO_WEB_TOKEN is unset" placeholderTextColor={palette.muted} />
-          <PrimaryButton label="Save and test" onPress={save} />
-          {status ? <Text style={styles.status}>{status}</Text> : null}
+
+        <Card style={styles.card}>
+          <SectionTitle>Passkeys</SectionTitle>
+          <Text style={styles.summary}>{status?.passkey_count ?? credentials.length} registered</Text>
+          <View style={styles.credentials}>
+            {credentials.map((credential) => (
+              <View key={credential.id} style={styles.credential}>
+                <View style={styles.credentialText}>
+                  <Text style={styles.credentialTitle}>{credential.label}</Text>
+                  <Text style={styles.meta}>
+                    {credential.backed_up ? 'Synced passkey' : credential.device_type || 'Passkey'}
+                  </Text>
+                </View>
+                <Text style={styles.meta}>{credential.last_used_at ? 'Used' : 'New'}</Text>
+              </View>
+            ))}
+          </View>
+          <PrimaryButton label={busy ? 'Waiting…' : 'Add passkey'} onPress={add} disabled={busy} />
+          {message ? <Text style={styles.message}>{message}</Text> : null}
         </Card>
-        <Card style={styles.note}>
-          <Text style={styles.noteTitle}>Credential storage</Text>
-          <Text style={styles.noteText}>On iOS the API token lives in Keychain through Expo SecureStore. On web it is browser-local, so remote deployments should use HTTPS and a scoped token.</Text>
+
+        <Card style={styles.card}>
+          <SectionTitle>Service</SectionTitle>
+          <View style={styles.row}>
+            <Text style={styles.label}>Backend</Text>
+            <Text style={styles.value}>{apiBaseUrl() || 'Same origin'}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.label}>Relying party</Text>
+            <Text style={styles.value}>{status?.rp_id ?? '…'}</Text>
+          </View>
+          <Text style={styles.note}>The web app and API share one origin. Native iOS uses the same backend and stores only its opaque session token in Keychain.</Text>
+        </Card>
+
+        <Card style={styles.card}>
+          <SectionTitle>Session</SectionTitle>
+          <PrimaryButton label={busy ? 'Working…' : 'Sign out'} onPress={logout} disabled={busy} />
         </Card>
       </ScrollView>
     </Screen>
@@ -53,15 +101,20 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  shell: { width: '100%', maxWidth: 760, alignSelf: 'center', padding: spacing.md, paddingBottom: 90, gap: spacing.lg },
+  shell: { width: '100%', maxWidth: 760, alignSelf: 'center', padding: spacing.md, paddingBottom: 110, gap: spacing.lg },
   header: { gap: 6, marginTop: spacing.sm },
   title: { color: palette.text, fontSize: 30, fontWeight: '800' },
   subtitle: { color: palette.muted, lineHeight: 21 },
-  form: { gap: spacing.sm },
-  label: { color: palette.muted, fontSize: 12, fontWeight: '700' },
-  input: { minHeight: 48, backgroundColor: palette.panelRaised, borderColor: palette.border, borderWidth: 1, borderRadius: 12, color: palette.text, paddingHorizontal: 14, fontSize: 16 },
-  status: { color: palette.accent, fontSize: 13 },
-  note: { gap: 6 },
-  noteTitle: { color: palette.text, fontSize: 15, fontWeight: '700' },
-  noteText: { color: palette.muted, lineHeight: 20, fontSize: 13 },
+  card: { gap: spacing.md },
+  summary: { color: palette.accent, fontSize: 14, fontWeight: '700' },
+  credentials: { gap: spacing.sm },
+  credential: { minHeight: 58, backgroundColor: palette.panelRaised, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  credentialText: { flex: 1, gap: 3 },
+  credentialTitle: { color: palette.text, fontSize: 15, fontWeight: '700' },
+  meta: { color: palette.muted, fontSize: 12 },
+  message: { color: palette.accent, fontSize: 13 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.md },
+  label: { color: palette.muted, fontSize: 13 },
+  value: { color: palette.text, fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
+  note: { color: palette.muted, fontSize: 13, lineHeight: 20 },
 });
