@@ -3,7 +3,7 @@
     "name": "Avo",
     "slug": "avo-code",
     "scheme": "avo",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -14,11 +14,23 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kaitwalla.avocode",
+      "associatedDomains": ["webcredentials:avo.penginlab.com"],
       "config": {
         "usesNonExemptEncryption": false
       }
     },
-    "plugins": ["expo-router", "expo-secure-store"],
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "15.0"
+          }
+        }
+      ]
+    ],
     "experiments": {
       "typedRoutes": true
     }
