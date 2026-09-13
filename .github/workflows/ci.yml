@@ -37,3 +37,11 @@ jobs:
         run: npm run typecheck
       - name: Export web
         run: npx expo export --platform web
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [test, ui]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unified web/API image
+        run: docker build --tag avo-code-ci .
