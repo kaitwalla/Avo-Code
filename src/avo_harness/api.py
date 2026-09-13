@@ -429,6 +429,8 @@ def create_app(config_path: str = "avo.json"):
 
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str):
+        if path == "api" or path.startswith("api/") or path == ".well-known" or path.startswith(".well-known/"):
+            raise HTTPException(status_code=404)
         if not static_root.exists():
             raise HTTPException(status_code=404, detail="web frontend has not been built")
         requested = (static_root / path).resolve()
