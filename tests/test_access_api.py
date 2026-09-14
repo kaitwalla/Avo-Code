@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from avo_harness.api_chat import create_app
+from avo_harness.auth import AuthStore
 
 
 def write_config(tmp_path: Path) -> Path:
@@ -41,6 +42,41 @@ def test_access_api_is_session_protected(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(config))
     response = client.get("/api/access")
     assert response.status_code == 401
+
+
+def test_production_increase_creates_step_up_approval(tmp_path: Path, monkeypatch) -> None:
+    config = write_config(tmp_path)
+    configure(monkeypatch, tmp_path, auth_disabled=False)
+    client = TestClient(create_app(config))
+    session = AuthStore(tmp_path / "state" / "state.sqlite3").issue_session()
+    headers = {"Authorization": f"Bearer {session.token}"}
+
+    candidate = """version: 1
+repositories:
+  primary:
+    path: .
+    access: write
+secrets: {}
+services: {}
+tools: {}
+network:
+  allow: [github.com]
+"""
+    response = client.post("/api/access/apply", json={"yaml": candidate}, headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["applied"] is False
+    assert payload["requires_passkey"] is True
+    assert payload["approval_id"]
+    assert not (tmp_path / ".avo" / "access.yaml").exists()
+
+    # A pending privilege increase cannot be completed without an actual registered passkey.
+    options = client.post(
+        f"/api/access/approvals/{payload['approval_id']}/options",
+        headers=headers,
+    )
+    assert options.status_code == 409
+    assert "no passkeys" in options.json()["detail"]
 
 
 def test_access_api_edits_repo_manifest_in_local_dev(tmp_path: Path, monkeypatch) -> None:
