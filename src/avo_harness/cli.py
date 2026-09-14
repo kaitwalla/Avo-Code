@@ -123,7 +123,7 @@ def cmd_web(args: argparse.Namespace) -> int:
     except ImportError:
         print("web dependencies are missing; install avo-harness[web]", file=sys.stderr)
         return 2
-    from .api import create_app
+    from .api_chat import create_app
 
     uvicorn.run(create_app(args.config), host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("-o", "--output", default="avogym-report")
     benchmark.set_defaults(func=cmd_benchmark)
 
-    web = sub.add_parser("web", help="serve the unified web/iOS control plane")
+    web = sub.add_parser("web", help="serve the unified chat-first web/iOS control plane")
     web.add_argument("-c", "--config", default="avo.json")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8765)
