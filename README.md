@@ -18,6 +18,49 @@ When execution is ready, the conversation launches the normal Avo coding loop an
 
 The conversational investigation checkout is disposable. Any accidental edits made by an investigation harness are discarded before execution. Actual coding still happens through Avo's isolated candidate-worktree/evaluator loop.
 
+## Declarative access
+
+Each repository can describe the capabilities it wants Avo to use in `.avo/access.yaml`. The manifest is intentionally human-readable and version-controlled:
+
+```yaml
+version: 1
+repositories:
+  avo-code:
+    path: .
+    access: write
+  rooter:
+    path: /workspace/rooter
+    access: read
+
+secrets:
+  github:
+    source: env:GITHUB_TOKEN
+    expose_to: [researcher, coder]
+
+services:
+  rooter:
+    url: http://rooter:8080
+    access: write
+
+tools:
+  shell:
+    enabled: true
+    expose_to: [coder, infrastructure]
+
+network:
+  allow:
+    - github.com
+    - api.github.com
+```
+
+Secret values never belong in this file. Secret sources must be references such as `env:GITHUB_TOKEN` or `file:/run/secrets/github`; the Access UI reports only whether a referenced secret is configured, never its value.
+
+Avo keeps a persisted **granted** capability snapshot alongside the repo's **requested** manifest. Reductions take effect immediately. Increases such as adding a repository or secret, adding a network host/tool, changing a resource location, or escalating `read` to `write` remain ineffective until the owner approves the exact manifest through a fresh passkey assertion. This means an agent can edit `.avo/access.yaml`, but that edit alone cannot grant it more authority.
+
+Open **Settings → Access → Manage access** to enumerate effective repositories, secret references, services, tools, and network hosts or to edit the YAML directly. The backend validates the same file, so the UI and the checked-in manifest cannot drift into separate configuration systems.
+
+The capability manifest is Avo's application-level access contract. Container mounts, Unix permissions, network policy, and external service permissions remain the hard operating-system/infrastructure boundary; declaring a path or host does not magically make an unmounted or blocked resource reachable.
+
 ## One web + iOS control plane
 
 Avo-Code ships one first-party product:
@@ -60,7 +103,7 @@ export AVO_APPLE_TEAM_ID=YOUR_APPLE_TEAM_ID
 
 `AVO_RP_ID` normally does not need to be set; it defaults to the hostname from `AVO_PUBLIC_ORIGIN`. The iOS bundle ID is `com.kaitwalla.avocode` and the app is associated with `webcredentials:avo.penginlab.com`.
 
-`AVO_APPLE_TEAM_ID` is required for native iOS passkey domain association. Web passkeys can work without it. For explicit local-only development, `AVO_AUTH_DISABLED=1` disables authentication; do not use that on a remotely reachable deployment.
+`AVO_APPLE_TEAM_ID` is required for native iOS passkey domain association. Web passkeys can work without it. For explicit local-only development, `AVO_AUTH_DISABLED=1` disables authentication and step-up access approval; do not use that on a remotely reachable deployment.
 
 ### Unified Docker image
 

@@ -9,7 +9,7 @@ description = "Unofficial long-horizon agent orchestration inspired by NVIDIA AV
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "AVO Harness contributors"}]
-dependencies = []
+dependencies = ["PyYAML>=6,<7"]
 
 [project.optional-dependencies]
 nemo = ["nemo-fabric>=0.2,<0.3"]
