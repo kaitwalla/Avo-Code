@@ -43,6 +43,24 @@ function TaskCard({ run }: { run: RunSummary }) {
   );
 }
 
+function PendingTaskCard({ objective }: { objective: string }) {
+  return (
+    <Card style={styles.taskCard}>
+      <View style={styles.taskTop}>
+        <View style={styles.taskIdentity}>
+          <Text style={styles.taskEyebrow}>CODING TASK</Text>
+          <Text numberOfLines={2} style={styles.taskObjective}>{objective || 'Preparing coding task'}</Text>
+        </View>
+        <Pill label="starting" tone="warn" />
+      </View>
+      <View style={styles.pendingRow}>
+        <ActivityIndicator size="small" color={palette.accent} />
+        <Text style={styles.taskScore}>Preparing baseline and isolated worktree…</Text>
+      </View>
+    </Card>
+  );
+}
+
 function EvidenceBlock({ message }: { message: ChatMessage }) {
   const evidence = message.metadata?.evidence ?? [];
   if (!message.metadata?.execution_ready || evidence.length === 0) return null;
@@ -82,6 +100,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         <Text style={[styles.messageText, mine && styles.userText]}>{message.content}</Text>
         {!mine ? <EvidenceBlock message={message} /> : null}
         {message.run ? <TaskCard run={message.run} /> : null}
+        {!message.run && message.kind === 'execution' ? (
+          <PendingTaskCard objective={message.metadata?.objective ?? ''} />
+        ) : null}
       </View>
     </View>
   );
@@ -244,6 +265,7 @@ const styles = StyleSheet.create({
   taskEyebrow: { color: palette.accent, fontSize: 10, fontWeight: '900', letterSpacing: 1.1 },
   taskObjective: { color: palette.text, fontSize: 14, lineHeight: 19, fontWeight: '700' },
   taskBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  pendingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   taskScore: { color: palette.muted, fontSize: 12 },
   taskLink: { color: palette.accent, fontSize: 12, fontWeight: '800' },
   welcome: { gap: spacing.md, paddingVertical: spacing.xl, maxWidth: 650 },
