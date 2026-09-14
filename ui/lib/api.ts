@@ -120,6 +120,48 @@ export type SessionResponse = {
   token?: string;
 };
 
+export type AccessManifest = {
+  version: 1;
+  repositories: Record<string, { path: string; access: 'read' | 'write' }>;
+  secrets: Record<string, { source: string; expose_to: string[] }>;
+  services: Record<string, { url: string; access: 'read' | 'write' }>;
+  tools: Record<string, { enabled: boolean; expose_to: string[] }>;
+  network: { allow: string[] };
+};
+
+export type AccessChange = {
+  category: 'repositories' | 'secrets' | 'services' | 'tools' | 'network' | string;
+  name: string;
+  change: 'added' | 'removed' | 'changed' | string;
+  increase: boolean;
+  before?: unknown;
+  after?: unknown;
+};
+
+export type AccessStatus = {
+  path: string;
+  yaml: string;
+  requested: AccessManifest;
+  effective: AccessManifest;
+  secret_status: Record<string, { source: string; configured: boolean }>;
+  changes: AccessChange[];
+  requires_approval: boolean;
+};
+
+export type AccessPreview = {
+  manifest: AccessManifest;
+  changes: AccessChange[];
+  requires_approval: boolean;
+};
+
+export type AccessApplyResult = {
+  applied: boolean;
+  requires_passkey: boolean;
+  approval_id?: string;
+  changes: AccessChange[];
+  status?: AccessStatus;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await loadSessionToken();
   const response = await fetch(`${apiBaseUrl()}${path}`, {
@@ -183,4 +225,18 @@ export const api = {
   }),
   benchmarks: () => request<BenchmarkSummary[]>('/api/benchmarks'),
   benchmark: (id: string) => request<BenchmarkDetail>(`/api/benchmarks/${id.split('/').map(encodeURIComponent).join('/')}`),
+  access: () => request<AccessStatus>('/api/access'),
+  previewAccess: (yaml: string) => request<AccessPreview>('/api/access/preview', {
+    method: 'POST',
+    body: JSON.stringify({ yaml }),
+  }),
+  applyAccess: (yaml: string) => request<AccessApplyResult>('/api/access/apply', {
+    method: 'POST',
+    body: JSON.stringify({ yaml }),
+  }),
+  accessApprovalOptions: (approvalId: string) => request<CeremonyOptions>(`/api/access/approvals/${encodeURIComponent(approvalId)}/options`, { method: 'POST' }),
+  verifyAccessApproval: (approvalId: string, challengeId: string, credential: Record<string, unknown>) => request<{ ok: boolean; status: AccessStatus }>(`/api/access/approvals/${encodeURIComponent(approvalId)}/verify`, {
+    method: 'POST',
+    body: JSON.stringify({ challenge_id: challengeId, credential }),
+  }),
 };
