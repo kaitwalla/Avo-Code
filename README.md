@@ -1,6 +1,22 @@
 # Avo-Code
 
-Avo-Code is a long-horizon coding control plane built around deterministic evaluation, isolated candidate worktrees, compact memory, lazy specialist activation, and benchmark-driven strategy routing.
+Avo-Code is a chat-first engineering assistant backed by a long-horizon coding control plane. Conversation and repository investigation are the default; deterministic evaluation, isolated candidate worktrees, compact memory, lazy specialist activation, and benchmark-driven strategy routing come online when a requested change is ready to execute.
+
+## Chat first, agents when warranted
+
+The Assistant tab is Avo's primary interface. You can ask architectural questions, investigate a bug, trace behavior through the repository, or ask for a change in the same conversation.
+
+Avo does **not** turn every request into a coding run. It investigates in a disposable detached worktree and returns one of three internal outcomes:
+
+- `answer` — no repository mutation is needed
+- `clarify` — a material behavior/product decision is still unresolved
+- `execute` — the requested change has an evidence-backed target and a validation path
+
+Execution readiness is deterministic rather than a self-reported confidence percentage. Before Avo can auto-launch the coding loop it must produce a concrete objective, at least two sourced evidence items, at least one observable acceptance condition, and no unresolved clarification question. If that contract is incomplete, an attempted `execute` decision is downgraded to `clarify`.
+
+When execution is ready, the conversation launches the normal Avo coding loop and embeds a task card in chat. Runs, evaluator history, specialist activity, diffs/telemetry, and AvoGym remain available as drill-down instrumentation rather than being the product's front door.
+
+The conversational investigation checkout is disposable. Any accidental edits made by an investigation harness are discarded before execution. Actual coding still happens through Avo's isolated candidate-worktree/evaluator loop.
 
 ## One web + iOS control plane
 

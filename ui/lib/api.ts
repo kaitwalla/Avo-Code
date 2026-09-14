@@ -19,6 +19,31 @@ export type RunDetail = RunSummary & {
   metadata: Record<string, unknown>;
 };
 
+export type ChatEvidence = { fact: string; source: string };
+
+export type ChatMessage = {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  kind: 'text' | 'thinking' | 'ready' | 'execution' | 'error' | string;
+  status: 'complete' | 'thinking' | 'error' | string;
+  run_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  metadata: {
+    action?: 'answer' | 'clarify' | 'execute';
+    objective?: string;
+    evidence?: ChatEvidence[];
+    acceptance?: string[];
+    constraints?: string[];
+    question?: string;
+    execution_ready?: boolean;
+    auto_executed?: boolean;
+  };
+  run?: RunSummary;
+};
+
 export type VariantMetrics = {
   trials?: number;
   oracle_solve_rate?: number;
@@ -145,6 +170,11 @@ export const api = {
   credentials: () => request<PasskeyCredential[]>('/api/auth/credentials'),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<{ ok: boolean; benchmark_root?: string; rp_id?: string; static_web?: boolean }>('/api/health'),
+  chatMessages: () => request<ChatMessage[]>('/api/chat/messages'),
+  sendChat: (content: string, autoExecute = true) => request<{ accepted: boolean; user_message_id: string; assistant_message_id: string }>('/api/chat/messages', {
+    method: 'POST',
+    body: JSON.stringify({ content, auto_execute: autoExecute }),
+  }),
   runs: () => request<RunSummary[]>('/api/runs'),
   run: (id: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
   start: (objective: string) => request<{ accepted: boolean; pid: number }>('/api/runs', {
