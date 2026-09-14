@@ -361,7 +361,7 @@ class AssistantService:
             text=True,
         )
 
-    def _find_run(self, objective: str, started_at: str, timeout_seconds: float = 12.0) -> str | None:
+    def _find_run(self, objective: str, started_at: str, timeout_seconds: float = 600.0) -> str | None:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             try:
@@ -375,31 +375,65 @@ class AssistantService:
                     return str(row[0])
             except sqlite3.OperationalError:
                 pass
-            time.sleep(0.25)
+            time.sleep(0.35)
         return None
+
+    def _link_run(
+        self,
+        assistant_id: str,
+        decision: AssistantDecision,
+        metadata: dict[str, Any],
+        started_at: str,
+    ) -> None:
+        run_id = self._find_run(decision.objective, started_at)
+        if not run_id:
+            return
+        linked = dict(metadata)
+        linked["run_link_pending"] = False
+        self.store.update_message(
+            assistant_id,
+            content=decision.reply,
+            kind="execution",
+            status="complete",
+            run_id=run_id,
+            metadata=linked,
+        )
 
     def _process(self, conversation_id: str, assistant_id: str, auto_execute: bool) -> None:
         try:
             decision = self._investigate(conversation_id)
-            run_id: str | None = None
-            kind = "text"
             metadata = decision.metadata()
             if decision.execution_ready and auto_execute:
                 started_at = _now()
                 proc = self._launch_run(decision.objective)
-                run_id = self._find_run(decision.objective, started_at)
                 metadata["pid"] = proc.pid
                 metadata["auto_executed"] = True
-                kind = "execution"
-            elif decision.execution_ready:
+                metadata["run_link_pending"] = True
+                self.store.update_message(
+                    assistant_id,
+                    content=decision.reply,
+                    kind="execution",
+                    status="complete",
+                    run_id=None,
+                    metadata=metadata,
+                )
+                threading.Thread(
+                    target=self._link_run,
+                    args=(assistant_id, decision, dict(metadata), started_at),
+                    daemon=True,
+                    name=f"avo-link-{assistant_id[:8]}",
+                ).start()
+                return
+
+            kind = "ready" if decision.execution_ready else "text"
+            if decision.execution_ready:
                 metadata["auto_executed"] = False
-                kind = "ready"
             self.store.update_message(
                 assistant_id,
                 content=decision.reply,
                 kind=kind,
                 status="complete",
-                run_id=run_id,
+                run_id=None,
                 metadata=metadata,
             )
         except Exception as exc:
