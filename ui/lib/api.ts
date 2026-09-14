@@ -175,12 +175,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    let message = '';
+    const body = await response.text();
+    let message = body;
     try {
-      const payload = await response.json() as { detail?: string };
-      message = payload.detail || JSON.stringify(payload);
+      const payload = JSON.parse(body) as { detail?: unknown };
+      message = typeof payload.detail === 'string'
+        ? payload.detail
+        : payload.detail
+          ? JSON.stringify(payload.detail)
+          : body;
     } catch {
-      message = await response.text();
+      // Keep the raw response text when it is not JSON.
     }
     const error = new Error(message || `Avo API returned ${response.status}`);
     (error as Error & { status?: number }).status = response.status;

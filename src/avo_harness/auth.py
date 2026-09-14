@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import base64
 import secrets
 import sqlite3
 import uuid
@@ -309,7 +310,7 @@ class PasskeyAuth:
 
     def verify_registration(self, challenge_id: str, credential: dict[str, Any]) -> str:
         try:
-            from webauthn import bytes_to_base64url, verify_registration_response
+            from webauthn import verify_registration_response
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("passkey support requires avo-harness[web]") from exc
 
@@ -321,7 +322,7 @@ class PasskeyAuth:
             expected_origin=self.origin,
             require_user_verification=True,
         )
-        credential_id = bytes_to_base64url(verified.credential_id)
+        credential_id = base64.urlsafe_b64encode(verified.credential_id).decode("ascii").rstrip("=")
         response = credential.get("response") if isinstance(credential, dict) else None
         transports = []
         if isinstance(response, dict) and isinstance(response.get("transports"), list):

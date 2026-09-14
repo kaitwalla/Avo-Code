@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import os
@@ -12,6 +10,7 @@ from urllib.parse import urlparse
 
 from .auth import AuthStore, PasskeyAuth
 from .config import AVOConfig
+from .store import Store
 
 SESSION_COOKIE = "avo_session"
 SESSION_MAX_AGE = 30 * 24 * 60 * 60
@@ -146,6 +145,7 @@ def create_app(config_path: str = "avo.json"):
     apple_bundle_id = os.environ.get("AVO_IOS_BUNDLE_ID", "com.kaitwalla.avocode").strip()
     auth_disabled = os.environ.get("AVO_AUTH_DISABLED", "").lower() in {"1", "true", "yes"}
     auth_store = AuthStore(db_path)
+    Store(db_path).close()
     passkeys = PasskeyAuth(auth_store, rp_id=rp_id, origin=origin)
 
     app = FastAPI(title="Avo-Code API", version="1")
