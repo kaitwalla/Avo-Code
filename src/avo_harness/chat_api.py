@@ -1,40 +1,63 @@
 from __future__ import annotations
 
+import os
+import sqlite3
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .assistant import AssistantService
+from .auth import AuthStore
 from .config import AVOConfig
 
+SESSION_COOKIE = "avo_session"
 
-def register_chat_routes(
-    app: Any,
-    *,
-    config: AVOConfig,
-    config_file: Path,
-    authorize: Callable[..., str],
-    snapshot: Callable[[str], dict[str, Any] | None],
-) -> AssistantService:
-    from fastapi import Body, Depends, HTTPException, Query
+
+def register_chat_routes(app: Any, *, config: AVOConfig, config_file: Path) -> AssistantService:
+    from fastapi import Body, Cookie, Depends, Header, HTTPException, Query
 
     service = AssistantService(config, config_file)
+    auth_store = AuthStore(config.state_path / "state.sqlite3")
+    auth_disabled = os.environ.get("AVO_AUTH_DISABLED", "").lower() in {"1", "true", "yes"}
+
+    def raw_session(
+        authorization: str | None = Header(default=None),
+        avo_session: str | None = Cookie(default=None),
+    ) -> str | None:
+        if authorization and authorization.lower().startswith("bearer "):
+            return authorization[7:].strip()
+        return avo_session
+
+    def authorize(token: str | None = Depends(raw_session)) -> str:
+        if auth_disabled:
+            return "dev"
+        if not auth_store.validate_session(token):
+            raise HTTPException(status_code=401, detail="passkey authentication required")
+        return token or ""
+
+    def run_summary(run_id: str) -> dict[str, Any] | None:
+        path = config.state_path / "state.sqlite3"
+        if not path.exists():
+            return None
+        db = sqlite3.connect(path)
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute(
+                """SELECT id, objective, repo_path, best_score, status, created_at, updated_at
+                   FROM runs WHERE id=?""",
+                (run_id,),
+            ).fetchone()
+        finally:
+            db.close()
+        return dict(row) if row else None
 
     def enrich(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for message in messages:
             run_id = message.get("run_id")
             if not run_id:
                 continue
-            run = snapshot(str(run_id))
+            run = run_summary(str(run_id))
             if run is not None:
-                message["run"] = {
-                    "id": run["id"],
-                    "objective": run["objective"],
-                    "repo_path": run["repo_path"],
-                    "best_score": run["best_score"],
-                    "status": run["status"],
-                    "created_at": run["created_at"],
-                    "updated_at": run["updated_at"],
-                }
+                message["run"] = run
         return messages
 
     @app.get("/api/chat/messages")
