@@ -12,14 +12,12 @@ export default function TabLayout() {
     <AuthGate>
       <Tabs
         screenOptions={{
-          headerStyle: { backgroundColor: palette.bg },
-          headerTintColor: palette.text,
-          headerShadowVisible: false,
+          headerShown: false,
           tabBarStyle: {
             backgroundColor: palette.panel,
             borderTopColor: palette.border,
             height: wide ? 58 : 64,
-            maxWidth: wide ? 720 : undefined,
+            maxWidth: wide ? 760 : undefined,
             width: wide ? '100%' : undefined,
             alignSelf: wide ? 'center' : undefined,
           },
@@ -28,7 +26,8 @@ export default function TabLayout() {
           tabBarLabelStyle: { fontSize: 12, marginBottom: 6 },
         }}
       >
-        <Tabs.Screen name="index" options={{ title: 'Runs', tabBarIcon: ({ color }) => icon('●', color) }} />
+        <Tabs.Screen name="index" options={{ title: 'Assistant', tabBarIcon: ({ color }) => icon('✦', color) }} />
+        <Tabs.Screen name="runs" options={{ title: 'Runs', tabBarIcon: ({ color }) => icon('●', color) }} />
         <Tabs.Screen name="benchmarks" options={{ title: 'Benchmarks', tabBarIcon: ({ color }) => icon('▥', color) }} />
         <Tabs.Screen name="settings" options={{ title: 'Settings', tabBarIcon: ({ color }) => icon('⚙︎', color) }} />
       </Tabs>
