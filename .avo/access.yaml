@@ -1,0 +1,15 @@
+version: 1
+repositories:
+  avo-code:
+    path: .
+    access: write
+secrets: {}
+services: {}
+tools:
+  shell:
+    enabled: true
+    expose_to:
+      - coder
+      - infrastructure
+network:
+  allow: []
