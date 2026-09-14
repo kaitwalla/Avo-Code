@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .access_api import register_access_routes
 from .api import create_app as create_base_app
 from .chat_api import register_chat_routes
 from .config import AVOConfig
@@ -13,7 +14,7 @@ def create_app(config_path: str = "avo.json"):
     app = create_base_app(config_path)
 
     # The base app ends with a GET catch-all for the Expo SPA. Temporarily remove it so
-    # /api/chat/* is registered ahead of that catch-all, then restore it as the final route.
+    # first-party API extensions are registered ahead of that catch-all, then restore it last.
     frontend_routes = [
         route for route in app.router.routes if getattr(route, "path", None) == "/{path:path}"
     ]
@@ -21,5 +22,6 @@ def create_app(config_path: str = "avo.json"):
         app.router.routes = [route for route in app.router.routes if route not in frontend_routes]
 
     register_chat_routes(app, config=config, config_file=config_file)
+    register_access_routes(app, config=config)
     app.router.routes.extend(frontend_routes)
     return app
