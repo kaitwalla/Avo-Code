@@ -1,23 +1,29 @@
 import { useCallback, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { api, AuthStatus, PasskeyCredential } from '@/lib/api';
+import { api, AccessStatus, AuthStatus, PasskeyCredential } from '@/lib/api';
 import { addPasskey, signOut } from '@/lib/auth';
 import { apiBaseUrl } from '@/lib/storage';
-import { Card, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
+import { Card, Pill, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/lib/theme';
 
 export default function SettingsScreen() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [access, setAccess] = useState<AccessStatus | null>(null);
   const [credentials, setCredentials] = useState<PasskeyCredential[]>([]);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [nextStatus, nextCredentials] = await Promise.all([api.authStatus(), api.credentials()]);
+      const [nextStatus, nextCredentials, nextAccess] = await Promise.all([
+        api.authStatus(),
+        api.credentials(),
+        api.access(),
+      ]);
       setStatus(nextStatus);
       setCredentials(nextCredentials);
+      setAccess(nextAccess);
       setMessage('');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -50,13 +56,33 @@ export default function SettingsScreen() {
     }
   };
 
+  const accessCounts = access ? {
+    repos: Object.keys(access.effective.repositories).length,
+    secrets: Object.keys(access.effective.secrets).length,
+    services: Object.keys(access.effective.services).length,
+  } : { repos: 0, secrets: 0, services: 0 };
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.shell}>
         <View style={styles.header}>
-          <Text style={styles.title}>Security</Text>
-          <Text style={styles.subtitle}>Avo is single-user. Passkeys are the account.</Text>
+          <Text style={styles.title}>Settings</Text>
+          <Text style={styles.subtitle}>Security, capabilities, and the single Avo service.</Text>
         </View>
+
+        <Card style={styles.card}>
+          <View style={styles.sectionHeader}>
+            <SectionTitle>Access</SectionTitle>
+            {access?.requires_approval ? <Pill label="pending approval" tone="warn" /> : null}
+          </View>
+          <Text style={styles.summary}>
+            {accessCounts.repos} repos · {accessCounts.secrets} secrets · {accessCounts.services} services
+          </Text>
+          <Text style={styles.note}>
+            Avo’s requested capabilities live in {access?.path ?? '.avo/access.yaml'}. Secret values are never stored there; privilege increases require a fresh passkey.
+          </Text>
+          <PrimaryButton label="Manage access" onPress={() => router.push('/access')} />
+        </Card>
 
         <Card style={styles.card}>
           <SectionTitle>Passkeys</SectionTitle>
@@ -106,6 +132,7 @@ const styles = StyleSheet.create({
   title: { color: palette.text, fontSize: 30, fontWeight: '800' },
   subtitle: { color: palette.muted, lineHeight: 21 },
   card: { gap: spacing.md },
+  sectionHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm },
   summary: { color: palette.accent, fontSize: 14, fontWeight: '700' },
   credentials: { gap: spacing.sm },
   credential: { minHeight: 58, backgroundColor: palette.panelRaised, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
