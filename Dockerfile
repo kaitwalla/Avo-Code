@@ -12,7 +12,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir '.[web]'
+# The web product uses NeMo-backed workers for chat investigation and coding.
+# Install both runtime surfaces in the production image so a successful image
+# build proves the deployed assistant can actually instantiate NeMo Fabric.
+RUN python -m pip install --no-cache-dir '.[web,nemo]'
+RUN python -c "import nemo_fabric"
 COPY --from=ui-build /build/ui/dist /app/static
 
 ENV AVO_WEB_STATIC_DIR=/app/static \
