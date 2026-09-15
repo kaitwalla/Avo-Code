@@ -15,7 +15,10 @@ export default function WebTabLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          sceneStyle: { backgroundColor: palette.bg },
+          sceneStyle: {
+            backgroundColor: palette.bg,
+            paddingBottom: desktop ? 0 : ('calc(60px + env(safe-area-inset-bottom))' as never),
+          },
           tabBarActiveTintColor: palette.accent,
           tabBarInactiveTintColor: palette.muted,
           tabBarHideOnKeyboard: true,
