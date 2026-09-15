@@ -4,7 +4,7 @@ import { Feather } from '@expo/vector-icons';
 import { AuthGate } from '@/components/auth-gate';
 import { palette } from '@/lib/theme';
 
-const DESKTOP_BREAKPOINT = 1024;
+const DESKTOP_BREAKPOINT = 900;
 
 export default function WebTabLayout() {
   const { width } = useWindowDimensions();
@@ -55,34 +55,10 @@ export default function WebTabLayout() {
               },
         }}
       >
-        <Tabs.Screen
-          name="index"
-          options={{
-            title: 'Assistant',
-            tabBarIcon: ({ color, size }) => <Feather name="message-circle" color={color as string} size={size} />,
-          }}
-        />
-        <Tabs.Screen
-          name="runs"
-          options={{
-            title: 'Runs',
-            tabBarIcon: ({ color, size }) => <Feather name="activity" color={color as string} size={size} />,
-          }}
-        />
-        <Tabs.Screen
-          name="benchmarks"
-          options={{
-            title: 'Benchmarks',
-            tabBarIcon: ({ color, size }) => <Feather name="bar-chart-2" color={color as string} size={size} />,
-          }}
-        />
-        <Tabs.Screen
-          name="settings"
-          options={{
-            title: 'Settings',
-            tabBarIcon: ({ color, size }) => <Feather name="settings" color={color as string} size={size} />,
-          }}
-        />
+        <Tabs.Screen name="index" options={{ title: 'Assistant', tabBarIcon: ({ color, size }) => <Feather name="message-circle" color={color as string} size={size} /> }} />
+        <Tabs.Screen name="runs" options={{ title: 'Runs', tabBarIcon: ({ color, size }) => <Feather name="activity" color={color as string} size={size} /> }} />
+        <Tabs.Screen name="benchmarks" options={{ title: 'Benchmarks', tabBarIcon: ({ color, size }) => <Feather name="bar-chart-2" color={color as string} size={size} /> }} />
+        <Tabs.Screen name="settings" options={{ title: 'Settings', tabBarIcon: ({ color, size }) => <Feather name="settings" color={color as string} size={size} /> }} />
       </Tabs>
     </AuthGate>
   );
