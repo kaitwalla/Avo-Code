@@ -3,11 +3,13 @@ import {
   ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
+  NativeSyntheticEvent,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  TextInputKeyPressEventData,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -148,6 +150,17 @@ export default function AssistantScreen() {
     }
   };
 
+  const handleKeyPress = (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+    if (Platform.OS !== 'web' || event.nativeEvent.key !== 'Enter') return;
+    const nativeEvent = event.nativeEvent as TextInputKeyPressEventData & {
+      shiftKey?: boolean;
+      preventDefault?: () => void;
+    };
+    if (nativeEvent.shiftKey) return;
+    nativeEvent.preventDefault?.();
+    void send();
+  };
+
   return (
     <Screen>
       <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 58 : 0}>
@@ -193,6 +206,7 @@ export default function AssistantScreen() {
             <TextInput
               value={draft}
               onChangeText={setDraft}
+              onKeyPress={handleKeyPress}
               placeholder="Message Avo…"
               placeholderTextColor={palette.muted}
               style={styles.input}
