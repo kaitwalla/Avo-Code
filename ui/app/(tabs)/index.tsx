@@ -100,9 +100,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         <Text style={[styles.messageText, mine && styles.userText]}>{message.content}</Text>
         {!mine ? <EvidenceBlock message={message} /> : null}
         {message.run ? <TaskCard run={message.run} /> : null}
-        {!message.run && message.kind === 'execution' ? (
-          <PendingTaskCard objective={message.metadata?.objective ?? ''} />
-        ) : null}
+        {!message.run && message.kind === 'execution' ? <PendingTaskCard objective={message.metadata?.objective ?? ''} /> : null}
       </View>
     </View>
   );
@@ -110,7 +108,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
 export default function AssistantScreen() {
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const desktop = width >= 1024;
+  const compact = width < 700;
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -151,13 +150,9 @@ export default function AssistantScreen() {
 
   return (
     <Screen>
-      <KeyboardAvoidingView
-        style={styles.keyboard}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 58 : 0}
-      >
-        <View style={[styles.shell, wide && styles.shellWide]}>
-          <View style={[styles.header, wide && styles.headerWide]}>
+      <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 58 : 0}>
+        <View style={[styles.shell, desktop && styles.shellDesktop]}>
+          <View style={[styles.header, desktop && styles.headerDesktop]}>
             <View>
               <Text style={styles.eyebrow}>AVO</Text>
               <Text style={styles.title}>Engineering assistant</Text>
@@ -170,18 +165,20 @@ export default function AssistantScreen() {
             data={messages}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => <MessageBubble message={item} />}
-            contentContainerStyle={[styles.messages, messages.length === 0 && styles.messagesEmpty]}
+            contentContainerStyle={[
+              styles.messages,
+              compact && styles.messagesCompact,
+              messages.length === 0 && styles.messagesEmpty,
+              messages.length === 0 && desktop && styles.messagesEmptyDesktop,
+            ]}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             onContentSizeChange={() => messages.length && listRef.current?.scrollToEnd({ animated: false })}
             ListEmptyComponent={(
-              <View style={styles.welcome}>
+              <View style={[styles.welcome, desktop && styles.welcomeDesktop]}>
                 <Text style={styles.welcomeTitle}>Ask about the code. Or ask Avo to change it.</Text>
-                <Text style={styles.welcomeText}>
-                  Avo starts by investigating the repository. If the requested change is concrete and evidence-backed,
-                  it will launch the coding loop automatically. If something important is ambiguous, it asks first.
-                </Text>
+                <Text style={styles.welcomeText}>Avo investigates first. When a requested change has concrete evidence and a validation path, it can launch the coding loop automatically. If something important is ambiguous, it asks.</Text>
                 <View style={styles.prompts}>
                   <Text style={styles.prompt}>“Why is auth bouncing back to login?”</Text>
                   <Text style={styles.prompt}>“Fix the failing session refresh flow.”</Text>
@@ -192,7 +189,7 @@ export default function AssistantScreen() {
           />
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <View style={[styles.composer, wide && styles.composerWide]}>
+          <View style={[styles.composer, desktop && styles.composerDesktop]}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
@@ -203,17 +200,7 @@ export default function AssistantScreen() {
               maxLength={12000}
               textAlignVertical="top"
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Send message"
-              disabled={!draft.trim() || sending}
-              onPress={send}
-              style={({ pressed }) => [
-                styles.send,
-                (!draft.trim() || sending) && styles.sendDisabled,
-                pressed && draft.trim() && !sending && styles.sendPressed,
-              ]}
-            >
+            <Pressable accessibilityRole="button" accessibilityLabel="Send message" disabled={!draft.trim() || sending} onPress={send} style={({ pressed }) => [styles.send, (!draft.trim() || sending) && styles.sendDisabled, pressed && draft.trim() && !sending && styles.sendPressed]}>
               <Text style={styles.sendText}>{sending ? '…' : '↑'}</Text>
             </Pressable>
           </View>
@@ -226,21 +213,16 @@ export default function AssistantScreen() {
 const styles = StyleSheet.create({
   keyboard: { flex: 1 },
   shell: { flex: 1, width: '100%', alignSelf: 'center', maxWidth: 920 },
-  shellWide: { paddingHorizontal: spacing.xl },
-  header: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: palette.border,
-    gap: 3,
-  },
-  headerWide: { paddingHorizontal: 0, paddingTop: spacing.lg },
+  shellDesktop: { paddingHorizontal: spacing.xl, maxWidth: 1080 },
+  header: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.border, gap: 3 },
+  headerDesktop: { paddingHorizontal: 0, paddingTop: spacing.xl, paddingBottom: spacing.md },
   eyebrow: { color: palette.accent, fontSize: 12, fontWeight: '900', letterSpacing: 1.7 },
   title: { color: palette.text, fontSize: 22, lineHeight: 28, fontWeight: '800' },
   mode: { color: palette.muted, fontSize: 12 },
   messages: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.md, gap: spacing.md },
+  messagesCompact: { paddingBottom: 82 },
   messagesEmpty: { flexGrow: 1, justifyContent: 'center' },
+  messagesEmptyDesktop: { justifyContent: 'flex-start', paddingTop: 72 },
   messageRow: { width: '100%', flexDirection: 'row' },
   userRow: { justifyContent: 'flex-end' },
   assistantRow: { justifyContent: 'flex-start' },
@@ -269,26 +251,14 @@ const styles = StyleSheet.create({
   taskScore: { color: palette.muted, fontSize: 12 },
   taskLink: { color: palette.accent, fontSize: 12, fontWeight: '800' },
   welcome: { gap: spacing.md, paddingVertical: spacing.xl, maxWidth: 650 },
+  welcomeDesktop: { paddingTop: spacing.xl },
   welcomeTitle: { color: palette.text, fontSize: 27, lineHeight: 34, fontWeight: '800' },
   welcomeText: { color: palette.muted, fontSize: 15, lineHeight: 23 },
   prompts: { gap: 8, marginTop: 4 },
   prompt: { color: palette.text, fontSize: 13, lineHeight: 18, backgroundColor: palette.panel, borderRadius: 12, padding: 11 },
   error: { color: palette.bad, paddingHorizontal: spacing.md, paddingBottom: 6, fontSize: 12 },
-  composer: {
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.panel,
-    borderRadius: 20,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingLeft: 14,
-    paddingRight: 7,
-    paddingVertical: 7,
-    gap: 8,
-  },
-  composerWide: { marginHorizontal: 0, marginBottom: spacing.lg },
+  composer: { marginHorizontal: spacing.md, marginBottom: spacing.sm, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.panel, borderRadius: 20, flexDirection: 'row', alignItems: 'flex-end', paddingLeft: 14, paddingRight: 7, paddingVertical: 7, gap: 8 },
+  composerDesktop: { marginHorizontal: 0, marginBottom: spacing.xl },
   input: { flex: 1, minHeight: 42, maxHeight: 150, color: palette.text, fontSize: 16, lineHeight: 22, paddingTop: 9, paddingBottom: 8 },
   send: { width: 40, height: 40, borderRadius: 20, backgroundColor: palette.accent, alignItems: 'center', justifyContent: 'center' },
   sendDisabled: { opacity: 0.35 },
