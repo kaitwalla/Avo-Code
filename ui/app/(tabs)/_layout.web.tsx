@@ -4,9 +4,11 @@ import { Feather } from '@expo/vector-icons';
 import { AuthGate } from '@/components/auth-gate';
 import { palette } from '@/lib/theme';
 
+const DESKTOP_BREAKPOINT = 1024;
+
 export default function WebTabLayout() {
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const desktop = width >= DESKTOP_BREAKPOINT;
 
   return (
     <AuthGate>
@@ -17,34 +19,51 @@ export default function WebTabLayout() {
           tabBarActiveTintColor: palette.accent,
           tabBarInactiveTintColor: palette.muted,
           tabBarHideOnKeyboard: true,
+          tabBarPosition: desktop ? 'left' : 'bottom',
+          tabBarLabelPosition: desktop ? 'beside-icon' : 'below-icon',
           tabBarLabelStyle: {
-            fontSize: wide ? 12 : 11,
+            fontSize: desktop ? 13 : 11,
             fontWeight: '700',
-            marginTop: 1,
-            marginBottom: 2,
+            marginBottom: desktop ? 0 : 2,
           },
-          tabBarItemStyle: {
-            minHeight: 52,
-            paddingTop: 5,
-          },
-          tabBarStyle: {
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: palette.panel,
-            borderTopColor: palette.border,
-            borderTopWidth: 1,
-            height: 'calc(60px + env(safe-area-inset-bottom))' as never,
-            paddingBottom: 'max(6px, env(safe-area-inset-bottom))' as never,
-            paddingHorizontal: wide ? 24 : 8,
-            maxWidth: wide ? 760 : undefined,
-            alignSelf: wide ? 'center' : undefined,
-          },
+          tabBarItemStyle: desktop
+            ? { minHeight: 48, maxHeight: 48, borderRadius: 10, marginHorizontal: 10, marginVertical: 2 }
+            : { minHeight: 52, paddingTop: 5 },
+          tabBarStyle: desktop
+            ? {
+                position: 'relative',
+                width: 210,
+                height: '100%',
+                backgroundColor: palette.panel,
+                borderRightColor: palette.border,
+                borderRightWidth: 1,
+                borderTopWidth: 0,
+                paddingTop: 18,
+                paddingBottom: 18,
+              }
+            : {
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: palette.panel,
+                borderTopColor: palette.border,
+                borderTopWidth: 1,
+                height: 'calc(60px + env(safe-area-inset-bottom))' as never,
+                paddingBottom: 'max(6px, env(safe-area-inset-bottom))' as never,
+                paddingHorizontal: 8,
+              },
         }}
       >
         <Tabs.Screen
           name="index"
+          options={{
+            title: 'Assistant',
+            tabBarIcon: ({ color, size }) => <Feather name="message-circle" color={color as string} size={size} />,
+          }}
+        />
+        <Tabs.Screen
+          name="runs"
           options={{
             title: 'Runs',
             tabBarIcon: ({ color, size }) => <Feather name="activity" color={color as string} size={size} />,
