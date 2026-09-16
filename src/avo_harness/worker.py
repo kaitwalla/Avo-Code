@@ -5,7 +5,9 @@ import os
 import shlex
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,6 +18,17 @@ from .models import WorkerResult
 
 class Worker(Protocol):
     def run(self, prompt: str, workspace: Path) -> WorkerResult: ...
+
+
+_ADAPTER_ENV_LOCK = threading.Lock()
+_MAX_TURNS_UNSUPPORTED_ADAPTERS = {"nvidia.fabric.codex"}
+_ADAPTER_INSTALL_HINTS = {
+    "nvidia.fabric.hermes": "nemo-fabric[hermes-agent] plus Hermes Agent 0.20+ from source",
+    "nvidia.fabric.codex": "nemo-fabric[codex]",
+    "nvidia.fabric.claude": "nemo-fabric[claude]",
+    "nvidia.fabric.langchain.deepagents": "nemo-fabric[deepagents]",
+    "nvidia.fabric.mini-swe-agent": "nemo-fabric[mini-swe-agent]",
+}
 
 
 def _jsonable(value: Any) -> Any:
@@ -76,6 +89,48 @@ def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None,
         float(cost) if cost is not None else None,
         raw,
     )
+
+
+@contextmanager
+def _adapter_python_env(adapter_python: str | None):
+    """Temporarily select an isolated NeMo adapter environment for one worker.
+
+    NeMo Fabric discovers Python adapter descriptors and their harness through
+    ADAPTER_PYTHON. WorkerConfig.env is already overrideable per role/strategy,
+    so treating that one key as runtime-owned lets Avo mix incompatible harness
+    environments without introducing another configuration surface.
+    """
+
+    if not adapter_python:
+        yield
+        return
+
+    # os.environ is process-global. Serialize only calls that override the
+    # interpreter so parallel workers cannot discover each other's adapters.
+    with _ADAPTER_ENV_LOCK:
+        previous = os.environ.get("ADAPTER_PYTHON")
+        os.environ["ADAPTER_PYTHON"] = adapter_python
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("ADAPTER_PYTHON", None)
+            else:
+                os.environ["ADAPTER_PYTHON"] = previous
+
+
+def _nemo_failure(exc: Exception, adapter_id: str) -> str:
+    detail = str(exc)
+    lowered = detail.lower().replace("_", " ")
+    if "unknown adapter" in lowered or "unknownadapter" in lowered.replace(" ", ""):
+        install = _ADAPTER_INSTALL_HINTS.get(adapter_id, "the adapter package for this adapter ID")
+        return (
+            f"NeMo Fabric cannot resolve adapter {adapter_id!r}. Install {install}. "
+            "If its harness has dependency conflicts with Avo's main environment, install it in "
+            "a separate virtualenv and set worker.env.ADAPTER_PYTHON to that environment's Python. "
+            f"Original error: {detail}"
+        )
+    return f"NeMo Fabric worker failed: {detail}"
 
 
 class CommandWorker:
@@ -146,15 +201,25 @@ class NeMoWorker:
 
     def run(self, prompt: str, workspace: Path) -> WorkerResult:
         started = time.monotonic()
+        adapter_python = self.config.env.get("ADAPTER_PYTHON")
         try:
-            result = asyncio.run(self._run(prompt, workspace))
+            with _adapter_python_env(adapter_python):
+                result = asyncio.run(self._run(prompt, workspace))
             result.duration_seconds = time.monotonic() - started
+            if adapter_python:
+                result.metadata["adapter_python"] = adapter_python
             return result
         except Exception as exc:
+            metadata: dict[str, Any] = {
+                "backend": "nemo",
+                "adapter_id": self.config.adapter_id,
+            }
+            if adapter_python:
+                metadata["adapter_python"] = adapter_python
             return WorkerResult(
                 success=False,
-                error=f"NeMo Fabric worker failed: {exc}",
-                metadata={"backend": "nemo", "adapter_id": self.config.adapter_id},
+                error=_nemo_failure(exc, self.config.adapter_id),
+                metadata=metadata,
                 duration_seconds=time.monotonic() - started,
             )
 
@@ -166,6 +231,21 @@ class NeMoWorker:
                 "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
             ) from exc
 
+        # ADAPTER_PYTHON selects the adapter host interpreter and must be visible
+        # to the Fabric runtime process, not forwarded as a harness environment
+        # variable. Other configured variables remain harness-visible.
+        harness_env = dict(self.config.env)
+        harness_env.pop("ADAPTER_PYTHON", None)
+
+        runtime: dict[str, Any] = {
+            "timeout_seconds": self.config.timeout_seconds,
+        }
+        # max_turns is a normalized optional capability, not a universal one.
+        # Codex intentionally has no mapping for it; including Avo's default of
+        # 24 makes Fabric reject an otherwise valid Codex configuration.
+        if self.config.adapter_id not in _MAX_TURNS_UNSUPPORTED_ADAPTERS:
+            runtime["max_turns"] = self.config.max_turns
+
         payload: dict[str, Any] = {
             "metadata": {"name": "avo-worker"},
             "harness": {
@@ -175,14 +255,11 @@ class NeMoWorker:
             "instructions": {
                 "system": {"content": self.config.system_prompt, "mode": "replace"}
             },
-            "runtime": {
-                "max_turns": self.config.max_turns,
-                "timeout_seconds": self.config.timeout_seconds,
-            },
+            "runtime": runtime,
             "environment": {
                 "provider": "local",
                 "workspace": str(workspace),
-                "env": self.config.env,
+                "env": harness_env,
             },
             "models": {},
         }

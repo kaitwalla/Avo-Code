@@ -6,17 +6,48 @@ COPY ui/ ./
 RUN npx expo export --platform web
 
 FROM python:3.12-slim AS runtime
+ARG HERMES_AGENT_REF=v2026.8.19
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-# The web product uses NeMo-backed workers for chat investigation and coding.
-# Install both runtime surfaces in the production image so a successful image
-# build proves the deployed assistant can actually instantiate NeMo Fabric.
-RUN python -m pip install --no-cache-dir '.[web,nemo]'
-RUN python -c "import nemo_fabric"
+# The production image ships the default Hermes stack only. NeMo Fabric supports
+# separate adapter environments through ADAPTER_PYTHON, which avoids dependency
+# collisions between harnesses (for example Hermes' OpenAI pin vs Deep Agents).
+# Hermes Agent 0.20+ is source-distributed and deliberately refuses wheel/sdist
+# builds, so keep a pinned checkout in the image and install it editable.
+RUN git clone --depth 1 --branch "${HERMES_AGENT_REF}" \
+      https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
+    && python -m pip install --no-cache-dir -e /opt/hermes-agent \
+    && python -m pip install --no-cache-dir '.[web,nemo]' \
+    && python -m pip check
+# Importing nemo_fabric alone does not prove the configured descriptor exists.
+# Planning resolves the default adapter and normalized config without contacting
+# a model, so an UnknownAdapter regression fails the image build.
+RUN python - <<'PY'
+from nemo_fabric import Fabric, FabricConfig
+
+adapter_id = "nvidia.fabric.hermes"
+payload = {
+    "metadata": {"name": "avo-image-smoke-hermes"},
+    "harness": {"adapter_id": adapter_id, "settings": {}},
+    "runtime": {"max_turns": 1, "timeout_seconds": 1},
+    "environment": {"provider": "local", "workspace": "/tmp", "env": {}},
+    "models": {
+        "default": {
+            "provider": "openai",
+            "model": "smoke",
+            "base_url": "http://127.0.0.1:1/v1",
+        }
+    },
+}
+config = FabricConfig.from_mapping(payload) if hasattr(FabricConfig, "from_mapping") else FabricConfig(**payload)
+plan = Fabric().plan(config)
+assert plan.adapter.adapter_id == adapter_id, plan
+print(f"NeMo Fabric adapter available: {adapter_id}")
+PY
 COPY --from=ui-build /build/ui/dist /app/static
 
 ENV AVO_WEB_STATIC_DIR=/app/static \

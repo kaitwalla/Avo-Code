@@ -12,10 +12,15 @@ authors = [{name = "AVO Harness contributors"}]
 dependencies = ["PyYAML>=6,<7"]
 
 [project.optional-dependencies]
-nemo = ["nemo-fabric>=0.2,<0.3"]
+# `nemo-fabric` by itself installs only the runtime. The default Avo worker is
+# Hermes, so the base NeMo extra must also install Hermes' adapter descriptor.
+# Hermes Agent 0.20+ itself is source-installed by the production image (or must
+# already be present in the environment for local installs).
+nemo = ["nemo-fabric[hermes-agent]>=0.2,<0.3"]
 deepagents = ["nemo-fabric[deepagents]>=0.2,<0.3"]
 codex = ["nemo-fabric[codex]>=0.2,<0.3"]
 claude = ["nemo-fabric[claude]>=0.2,<0.3"]
+mini-swe-agent = ["nemo-fabric[mini-swe-agent]>=0.2,<0.3"]
 web = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "webauthn>=3,<4"]
 dev = ["pytest>=8", "fastapi>=0.115,<1", "httpx>=0.28,<1", "webauthn>=3,<4"]
 
