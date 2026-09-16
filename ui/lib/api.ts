@@ -21,6 +21,14 @@ export type RunDetail = RunSummary & {
 
 export type ChatEvidence = { fact: string; source: string };
 
+export type ChatConversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+};
+
 export type ChatMessage = {
   id: string;
   conversation_id: string;
@@ -217,10 +225,15 @@ export const api = {
   credentials: () => request<PasskeyCredential[]>('/api/auth/credentials'),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<{ ok: boolean; benchmark_root?: string; rp_id?: string; static_web?: boolean }>('/api/health'),
-  chatMessages: () => request<ChatMessage[]>('/api/chat/messages'),
-  sendChat: (content: string, autoExecute = true) => request<{ accepted: boolean; user_message_id: string; assistant_message_id: string }>('/api/chat/messages', {
+  chatConversations: () => request<ChatConversation[]>('/api/chat/conversations'),
+  createChatConversation: (title?: string) => request<ChatConversation>('/api/chat/conversations', {
     method: 'POST',
-    body: JSON.stringify({ content, auto_execute: autoExecute }),
+    body: JSON.stringify(title ? { title } : {}),
+  }),
+  chatMessages: (conversationId = 'main') => request<ChatMessage[]>(`/api/chat/messages?conversation_id=${encodeURIComponent(conversationId)}`),
+  sendChat: (content: string, autoExecute = true, conversationId = 'main') => request<{ accepted: boolean; conversation_id: string; user_message_id: string; assistant_message_id: string }>('/api/chat/messages', {
+    method: 'POST',
+    body: JSON.stringify({ content, auto_execute: autoExecute, conversation_id: conversationId }),
   }),
   runs: () => request<RunSummary[]>('/api/runs'),
   run: (id: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
