@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from avo_harness.api import create_app as create_canonical_app
 from avo_harness.api_chat import create_app
 
 
@@ -30,6 +31,25 @@ def configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AVO_PUBLIC_ORIGIN", "https://avo.example.com")
     monkeypatch.setenv("AVO_WEB_STATIC_DIR", str(static))
     monkeypatch.setenv("AVO_AUTH_DISABLED", "1")
+
+
+def test_canonical_app_includes_chat_and_access_routes(tmp_path: Path, monkeypatch) -> None:
+    config = write_config(tmp_path)
+    configure_env(monkeypatch, tmp_path)
+    client = TestClient(create_canonical_app(config))
+
+    messages = client.get("/api/chat/messages")
+    assert messages.status_code == 200
+    assert messages.json() == []
+
+    conversations = client.get("/api/chat/conversations")
+    assert conversations.status_code == 200
+    assert [item["id"] for item in conversations.json()] == ["main"]
+
+    # Access may report manifest validation state, but it must be a registered
+    # first-party API route rather than falling through to the SPA 404.
+    access = client.get("/api/access")
+    assert access.status_code != 404
 
 
 def test_chat_routes_are_registered_before_spa_catchall(tmp_path: Path, monkeypatch) -> None:
