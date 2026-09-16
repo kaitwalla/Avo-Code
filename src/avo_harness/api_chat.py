@@ -1,27 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+# Backwards-compatible import path. The canonical application factory now
+# registers chat and Access routes directly, so direct ASGI imports and the CLI
+# cannot drift into different route sets.
+from .api import create_app
 
-from .access_api import register_access_routes
-from .api import create_app as create_base_app
-from .chat_api import register_chat_routes
-from .config import AVOConfig
-
-
-def create_app(config_path: str = "avo.json"):
-    config_file = Path(config_path).expanduser().resolve()
-    config = AVOConfig.load(config_file)
-    app = create_base_app(config_path)
-
-    # The base app ends with a GET catch-all for the Expo SPA. Temporarily remove it so
-    # first-party API extensions are registered ahead of that catch-all, then restore it last.
-    frontend_routes = [
-        route for route in app.router.routes if getattr(route, "path", None) == "/{path:path}"
-    ]
-    if frontend_routes:
-        app.router.routes = [route for route in app.router.routes if route not in frontend_routes]
-
-    register_chat_routes(app, config=config, config_file=config_file)
-    register_access_routes(app, config=config)
-    app.router.routes.extend(frontend_routes)
-    return app
+__all__ = ["create_app"]

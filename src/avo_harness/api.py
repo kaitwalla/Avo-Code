@@ -438,6 +438,16 @@ def create_app(config_path: str = "avo.json"):
         except WebSocketDisconnect:
             return
 
+    # This is the canonical application factory. First-party API extensions must
+    # be registered here so direct ASGI imports and the CLI expose the same app.
+    # Import lazily to avoid circular imports: chat_api/access_api depend on
+    # helpers from this module.
+    from .access_api import register_access_routes
+    from .chat_api import register_chat_routes
+
+    register_chat_routes(app, config=config, config_file=config_file)
+    register_access_routes(app, config=config)
+
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str):
         if path == "api" or path.startswith("api/") or path == ".well-known" or path.startswith(".well-known/"):
