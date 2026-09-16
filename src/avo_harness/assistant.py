@@ -8,10 +8,11 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .config import AVOConfig
 from .gitops import GitRepo
@@ -173,8 +174,17 @@ class ChatStore:
         db.row_factory = sqlite3.Row
         return db
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        db = self._connect()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
     def _init_schema(self) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -204,7 +214,7 @@ class ChatStore:
 
     def ensure_conversation(self, conversation_id: str = "main") -> None:
         now = _now()
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 "INSERT OR IGNORE INTO chat_conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
                 (conversation_id, "Avo", now, now),
@@ -224,7 +234,7 @@ class ChatStore:
         self.ensure_conversation(conversation_id)
         message_id = uuid.uuid4().hex
         now = _now()
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 """INSERT INTO chat_messages
                    (id, conversation_id, role, content, kind, status, run_id, metadata_json, created_at, updated_at)
@@ -255,7 +265,7 @@ class ChatStore:
         run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 """UPDATE chat_messages SET content=?, kind=?, status=?, run_id=?, metadata_json=?, updated_at=?
                    WHERE id=?""",
@@ -264,7 +274,7 @@ class ChatStore:
 
     def messages(self, conversation_id: str = "main", limit: int = 200) -> list[dict[str, Any]]:
         self.ensure_conversation(conversation_id)
-        with self._connect() as db:
+        with self._transaction() as db:
             rows = db.execute(
                 """SELECT * FROM (
                        SELECT * FROM chat_messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT ?
@@ -365,7 +375,7 @@ class AssistantService:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             try:
-                with sqlite3.connect(self.config.state_path / "state.sqlite3") as db:
+                with self.store._transaction() as db:
                     row = db.execute(
                         """SELECT id FROM runs WHERE objective=? AND created_at>=?
                            ORDER BY created_at DESC LIMIT 1""",

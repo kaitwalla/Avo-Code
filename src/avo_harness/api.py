@@ -4,8 +4,9 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from .auth import AuthStore, PasskeyAuth
@@ -20,6 +21,16 @@ def _connect(path: Path) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     return db
+
+
+@contextmanager
+def _transaction(path: Path) -> Iterator[sqlite3.Connection]:
+    db = _connect(path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 def _json(value: str | None, default: Any) -> Any:
@@ -167,11 +178,8 @@ def create_app(config_path: str = "avo.json"):
     def rows(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         if not db_path.exists():
             return []
-        db = _connect(db_path)
-        try:
+        with _transaction(db_path) as db:
             return [dict(row) for row in db.execute(query, params).fetchall()]
-        finally:
-            db.close()
 
     def snapshot(run_id: str) -> dict[str, Any] | None:
         found = rows("SELECT * FROM runs WHERE id=?", (run_id,))

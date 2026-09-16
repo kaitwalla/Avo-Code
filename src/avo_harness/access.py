@@ -7,9 +7,10 @@ import re
 import sqlite3
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -281,8 +282,17 @@ class AccessRegistry:
         db.row_factory = sqlite3.Row
         return db
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        db = self._connect()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
     def _init_schema(self) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS access_grant (
@@ -311,7 +321,7 @@ class AccessRegistry:
         return dump_manifest(default_manifest())
 
     def granted(self) -> dict[str, Any]:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT manifest_json FROM access_grant WHERE id=1").fetchone()
         if row is None:
             return default_manifest()
@@ -319,7 +329,7 @@ class AccessRegistry:
         return parse_manifest_text(dump_manifest(value))
 
     def _set_granted(self, manifest: dict[str, Any]) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 """INSERT INTO access_grant(id, manifest_json, updated_at) VALUES(1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET manifest_json=excluded.manifest_json, updated_at=excluded.updated_at""",
@@ -327,7 +337,7 @@ class AccessRegistry:
             )
 
     def _ensure_initial_grant(self) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT 1 FROM access_grant WHERE id=1").fetchone()
         if row is None:
             self._set_granted(self.requested())
@@ -384,7 +394,7 @@ class AccessRegistry:
         increases = [item for item in changes if item["increase"]]
         if increases and not allow_increase:
             approval_id = uuid.uuid4().hex
-            with self._connect() as db:
+            with self._transaction() as db:
                 db.execute(
                     "INSERT INTO access_approvals(id, manifest_yaml, changes_json, expires_at, applied_at) VALUES(?, ?, ?, ?, NULL)",
                     (approval_id, dump_manifest(candidate), _json(changes), _iso(_now() + timedelta(minutes=5))),
@@ -399,7 +409,7 @@ class AccessRegistry:
         return {"applied": True, "requires_passkey": False, "changes": changes, "status": self.status()}
 
     def pending_approval(self, approval_id: str) -> sqlite3.Row:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT * FROM access_approvals WHERE id=?", (approval_id,)).fetchone()
         if row is None or row["applied_at"] is not None:
             raise ValueError("access approval is invalid or already used")
@@ -411,7 +421,7 @@ class AccessRegistry:
         row = self.pending_approval(approval_id)
         manifest = parse_manifest_text(str(row["manifest_yaml"]))
         self._write(str(row["manifest_yaml"]), manifest)
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute("UPDATE access_approvals SET applied_at=? WHERE id=?", (_iso(_now()), approval_id))
         return self.status()
 

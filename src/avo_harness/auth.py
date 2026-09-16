@@ -7,10 +7,11 @@ import base64
 import secrets
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 def _now() -> datetime:
@@ -58,12 +59,21 @@ class AuthStore:
         db.row_factory = sqlite3.Row
         return db
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        db = self._connect()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
     def close(self) -> None:
         # Kept for the same lifecycle shape as Store; connections are per operation.
         return None
 
     def _init_schema(self) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -109,22 +119,22 @@ class AuthStore:
             )
 
     def credential_count(self) -> int:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
             return int(row["n"] if row else 0)
 
     def list_credentials(self) -> list[sqlite3.Row]:
-        with self._connect() as db:
+        with self._transaction() as db:
             return list(db.execute("SELECT * FROM auth_credentials ORDER BY created_at").fetchall())
 
     def credential(self, credential_id: str) -> sqlite3.Row | None:
-        with self._connect() as db:
+        with self._transaction() as db:
             return db.execute(
                 "SELECT * FROM auth_credentials WHERE credential_id=?", (credential_id,)
             ).fetchone()
 
     def owner_handle(self) -> bytes:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT value FROM auth_meta WHERE key='owner_handle'").fetchone()
             if row is not None:
                 return bytes(row["value"])
@@ -133,7 +143,7 @@ class AuthStore:
             return value
 
     def issue_bootstrap_code(self, ttl_minutes: int = 10) -> tuple[str, str]:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
             if row and int(row["n"] or 0) > 0:
                 raise RuntimeError("a passkey already exists; add additional passkeys while signed in")
@@ -152,7 +162,7 @@ class AuthStore:
             return code, _iso(expires)
 
     def validate_bootstrap(self, code: str) -> bool:
-        with self._connect() as db:
+        with self._transaction() as db:
             credential_row = db.execute("SELECT COUNT(*) AS n FROM auth_credentials").fetchone()
             if credential_row and int(credential_row["n"] or 0) > 0:
                 return False
@@ -164,12 +174,12 @@ class AuthStore:
             return hmac.compare_digest(str(row["code_hash"]), _hash(code.strip().upper()))
 
     def consume_bootstrap(self) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute("UPDATE auth_bootstrap SET used_at=? WHERE id=1", (_iso(_now()),))
 
     def create_challenge(self, kind: str, challenge: bytes, ttl_minutes: int = 5) -> str:
         challenge_id = uuid.uuid4().hex
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 "INSERT INTO auth_challenges(id, kind, challenge, expires_at, used_at) VALUES(?, ?, ?, ?, NULL)",
                 (challenge_id, kind, challenge, _iso(_now() + timedelta(minutes=ttl_minutes))),
@@ -177,7 +187,7 @@ class AuthStore:
         return challenge_id
 
     def consume_challenge(self, challenge_id: str, kind: str) -> bytes:
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute(
                 "SELECT * FROM auth_challenges WHERE id=? AND kind=?",
                 (challenge_id, kind),
@@ -203,7 +213,7 @@ class AuthStore:
         backed_up: bool,
         label: str = "Passkey",
     ) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 """INSERT INTO auth_credentials
                    (credential_id, public_key, sign_count, transports_json, device_type,
@@ -224,7 +234,7 @@ class AuthStore:
     def update_credential_use(
         self, credential_id: str, *, sign_count: int, device_type: str, backed_up: bool
     ) -> None:
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 """UPDATE auth_credentials SET sign_count=?, device_type=?, backed_up=?, last_used_at=?
                    WHERE credential_id=?""",
@@ -235,7 +245,7 @@ class AuthStore:
         raw = secrets.token_urlsafe(48)
         now = _now()
         expires = now + timedelta(days=ttl_days)
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute(
                 "INSERT INTO auth_sessions(token_hash, created_at, expires_at, last_seen_at) VALUES(?, ?, ?, ?)",
                 (_hash(raw), _iso(now), _iso(expires), _iso(now)),
@@ -246,7 +256,7 @@ class AuthStore:
         if not token:
             return False
         digest = _hash(token)
-        with self._connect() as db:
+        with self._transaction() as db:
             row = db.execute("SELECT * FROM auth_sessions WHERE token_hash=?", (digest,)).fetchone()
             if row is None:
                 return False
@@ -263,7 +273,7 @@ class AuthStore:
     def revoke_session(self, token: str | None) -> None:
         if not token:
             return
-        with self._connect() as db:
+        with self._transaction() as db:
             db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (_hash(token),))
 
 

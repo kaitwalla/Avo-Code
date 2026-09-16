@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .assistant import AssistantService
+from .api import _transaction
 from .auth import AuthStore
 from .config import AVOConfig
 
@@ -38,16 +38,12 @@ def register_chat_routes(app: Any, *, config: AVOConfig, config_file: Path) -> A
         path = config.state_path / "state.sqlite3"
         if not path.exists():
             return None
-        db = sqlite3.connect(path)
-        db.row_factory = sqlite3.Row
-        try:
+        with _transaction(path) as db:
             row = db.execute(
                 """SELECT id, objective, repo_path, best_score, status, created_at, updated_at
                    FROM runs WHERE id=?""",
                 (run_id,),
             ).fetchone()
-        finally:
-            db.close()
         return dict(row) if row else None
 
     def enrich(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
