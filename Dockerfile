@@ -14,10 +14,12 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 # NeMo Fabric 0.2 ships harness adapters separately from the runtime. Hermes
-# Agent 0.20+ is source-distributed, so install a pinned Hermes release first,
-# then install every NeMo-maintained harness Avo can route to.
-RUN python -m pip install --no-cache-dir \
-      "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}" \
+# Agent 0.20+ is source-distributed and deliberately refuses wheel/sdist builds,
+# so keep a pinned source checkout in the image and install it editable. Then
+# install every NeMo-maintained harness Avo can route to.
+RUN git clone --depth 1 --branch "${HERMES_AGENT_REF}" \
+      https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
+    && python -m pip install --no-cache-dir -e /opt/hermes-agent \
     && python -m pip install --no-cache-dir \
       '.[web,nemo,deepagents,codex,claude,mini-swe-agent]'
 # Importing nemo_fabric alone does not prove descriptors are registered. Plan a
