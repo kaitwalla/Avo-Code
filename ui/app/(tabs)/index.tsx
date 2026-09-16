@@ -6,6 +6,7 @@ import {
   NativeSyntheticEvent,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,7 +15,8 @@ import {
   View,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { api, ChatMessage, RunSummary } from '@/lib/api';
+import { api, ChatConversation, ChatMessage, RunSummary } from '@/lib/api';
+import { loadActiveConversationId, saveActiveConversationId } from '@/lib/storage';
 import { Card, Pill, Screen } from '@/components/ui';
 import { palette, spacing } from '@/lib/theme';
 
@@ -114,18 +116,34 @@ export default function AssistantScreen() {
   const compact = width < 700;
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [conversationId, setConversationId] = useState('main');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [creatingChat, setCreatingChat] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    void loadActiveConversationId().then((saved) => {
+      if (mounted && saved) setConversationId(saved);
+    });
+    return () => { mounted = false; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      setMessages(await api.chatMessages());
+      const [nextConversations, nextMessages] = await Promise.all([
+        api.chatConversations(),
+        api.chatMessages(conversationId),
+      ]);
+      setConversations(nextConversations);
+      setMessages(nextMessages);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [conversationId]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
   useEffect(() => {
@@ -133,13 +151,44 @@ export default function AssistantScreen() {
     return () => clearInterval(timer);
   }, [load]);
 
+  const selectConversation = async (id: string) => {
+    if (id === conversationId) return;
+    setConversationId(id);
+    setMessages([]);
+    setError('');
+    await saveActiveConversationId(id);
+    try {
+      setMessages(await api.chatMessages(id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const newChat = async () => {
+    if (creatingChat) return;
+    setCreatingChat(true);
+    try {
+      const conversation = await api.createChatConversation();
+      setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+      setConversationId(conversation.id);
+      setMessages([]);
+      setDraft('');
+      setError('');
+      await saveActiveConversationId(conversation.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingChat(false);
+    }
+  };
+
   const send = async () => {
     const content = draft.trim();
     if (!content || sending) return;
     setSending(true);
     setDraft('');
     try {
-      await api.sendChat(content, true);
+      await api.sendChat(content, true, conversationId);
       await load();
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
     } catch (err) {
@@ -166,11 +215,40 @@ export default function AssistantScreen() {
       <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 58 : 0}>
         <View style={[styles.shell, desktop && styles.shellDesktop]}>
           <View style={[styles.header, desktop && styles.headerDesktop]}>
-            <View>
-              <Text style={styles.eyebrow}>AVO</Text>
-              <Text style={styles.title}>Engineering assistant</Text>
+            <View style={styles.headerTop}>
+              <View style={styles.headerIdentity}>
+                <Text style={styles.eyebrow}>AVO</Text>
+                <Text style={styles.title}>Engineering assistant</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Start a new chat and reset context"
+                disabled={creatingChat}
+                onPress={newChat}
+                style={({ pressed }) => [styles.newChat, creatingChat && styles.newChatDisabled, pressed && !creatingChat && styles.newChatPressed]}
+              >
+                <Text style={styles.newChatText}>{creatingChat ? '…' : '+ New chat'}</Text>
+              </Pressable>
             </View>
             <Text style={styles.mode}>Investigates first · codes when ready</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.conversationStrip}>
+              {conversations.map((conversation) => {
+                const active = conversation.id === conversationId;
+                return (
+                  <Pressable
+                    key={conversation.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => { void selectConversation(conversation.id); }}
+                    style={({ pressed }) => [styles.conversationChip, active && styles.conversationChipActive, pressed && styles.conversationChipPressed]}
+                  >
+                    <Text numberOfLines={1} style={[styles.conversationTitle, active && styles.conversationTitleActive]}>
+                      {conversation.title}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
           </View>
 
           <FlatList
@@ -191,7 +269,7 @@ export default function AssistantScreen() {
             ListEmptyComponent={(
               <View style={[styles.welcome, desktop && styles.welcomeDesktop]}>
                 <Text style={styles.welcomeTitle}>Ask about the code. Or ask Avo to change it.</Text>
-                <Text style={styles.welcomeText}>Avo investigates first. When a requested change has concrete evidence and a validation path, it can launch the coding loop automatically. If something important is ambiguous, it asks.</Text>
+                <Text style={styles.welcomeText}>This chat has its own context. Start a new chat whenever you want a clean slate; older chats stay available above.</Text>
                 <View style={styles.prompts}>
                   <Text style={styles.prompt}>“Why is auth bouncing back to login?”</Text>
                   <Text style={styles.prompt}>“Fix the failing session refresh flow.”</Text>
@@ -228,11 +306,23 @@ const styles = StyleSheet.create({
   keyboard: { flex: 1 },
   shell: { flex: 1, width: '100%', alignSelf: 'center', maxWidth: 920 },
   shellDesktop: { paddingHorizontal: spacing.xl, maxWidth: 1080 },
-  header: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.border, gap: 3 },
+  header: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.border, gap: 7 },
   headerDesktop: { paddingHorizontal: 0, paddingTop: spacing.xl, paddingBottom: spacing.md },
+  headerTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  headerIdentity: { flex: 1, gap: 3 },
   eyebrow: { color: palette.accent, fontSize: 12, fontWeight: '900', letterSpacing: 1.7 },
   title: { color: palette.text, fontSize: 22, lineHeight: 28, fontWeight: '800' },
   mode: { color: palette.muted, fontSize: 12 },
+  newChat: { borderWidth: 1, borderColor: palette.border, backgroundColor: palette.panel, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
+  newChatDisabled: { opacity: 0.45 },
+  newChatPressed: { opacity: 0.72 },
+  newChatText: { color: palette.accent, fontSize: 12, fontWeight: '800' },
+  conversationStrip: { gap: 7, paddingTop: 3, paddingRight: spacing.sm },
+  conversationChip: { maxWidth: 220, borderRadius: 999, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.panel, paddingHorizontal: 11, paddingVertical: 6 },
+  conversationChipActive: { borderColor: palette.accent },
+  conversationChipPressed: { opacity: 0.72 },
+  conversationTitle: { color: palette.muted, fontSize: 12, fontWeight: '700' },
+  conversationTitleActive: { color: palette.text },
   messages: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.md, gap: spacing.md },
   messagesCompact: { paddingBottom: 82 },
   messagesEmpty: { flexGrow: 1, justifyContent: 'center' },
