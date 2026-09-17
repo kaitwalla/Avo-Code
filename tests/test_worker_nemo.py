@@ -140,6 +140,7 @@ def test_validate_resolves_adapter_and_runs_doctor(monkeypatch, tmp_path: Path) 
     assert result.metadata["adapter_id"] == "nvidia.fabric.hermes"
     assert result.metadata["doctor_status"] == "pass"
     assert result.metadata["api_key_env"] == "OPENAI_API_KEY"
+    assert result.metadata["adapter_python"] == sys.executable
     assert FakeFabric.last_config["harness"]["adapter_id"] == "nvidia.fabric.hermes"
     assert FakeFabric.last_config["harness"]["resolution"] == "preinstalled"
     assert FakeFabric.last_base_dir == tmp_path
@@ -200,6 +201,19 @@ def test_validate_accepts_explicit_hermes_api_key_env(monkeypatch, tmp_path: Pat
     assert result.success is True
     assert result.metadata["api_key_env"] == "LOCAL_MODEL_TOKEN"
     assert FakeFabric.last_config["models"]["default"]["api_key_env"] == "LOCAL_MODEL_TOKEN"
+
+
+def test_nemo_defaults_adapter_host_to_its_running_interpreter(monkeypatch, tmp_path: Path) -> None:
+    install_fake_fabric(monkeypatch)
+    monkeypatch.delenv("ADAPTER_PYTHON", raising=False)
+    worker = NeMoWorker(nemo_config("nvidia.fabric.hermes"))
+
+    result = worker.run("fix it", tmp_path)
+
+    assert result.success is True
+    assert FakeFabric.adapter_python_seen == sys.executable
+    assert result.metadata["adapter_python"] == sys.executable
+    assert os.environ.get("ADAPTER_PYTHON") is None
 
 
 def test_adapter_python_is_scoped_to_one_worker(monkeypatch, tmp_path: Path) -> None:
