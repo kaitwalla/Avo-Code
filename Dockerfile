@@ -21,8 +21,10 @@ RUN PIP_NO_CACHE_DIR=1 HERMES_AGENT_REF="${HERMES_AGENT_REF}" \
       python scripts/install_hermes.py /opt/hermes-agent \
     && python -m pip install --no-cache-dir '.[web,nemo]' \
     && python -m pip check
-# Exercise Avo's own no-model preflight. This resolves the configured descriptor
-# and runs Fabric.doctor, which checks adapter/harness runtime requirements.
+# Exercise Avo's own no-model preflight. This resolves the configured descriptor,
+# runs Fabric.doctor, and checks the credential environment Hermes will require
+# before the first actual turn. The dummy key is valid only for this unreachable
+# unauthenticated smoke endpoint.
 RUN python - <<'PY'
 from pathlib import Path
 
@@ -36,6 +38,7 @@ worker = WorkerConfig(
     model="smoke",
     provider="openai",
     base_url="http://127.0.0.1:1/v1",
+    env={"OPENAI_API_KEY": "local"},
     max_turns=1,
     timeout_seconds=1,
 )
