@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Install the pinned Hermes Agent source into the current Python environment.
 
-Hermes Agent 0.20+ is intentionally not distributed on PyPI. Keep this helper as
-Avo's single installation path so local development, CI, and Docker all use the
-same source ref and interpreter.
+Hermes Agent 0.20+ intentionally does not support wheel/sdist builds. Keep this
+helper as Avo's single installation path so local development, CI, and Docker all
+use the same source ref, interpreter, and durable editable checkout.
 """
 
 from __future__ import annotations
@@ -66,10 +66,11 @@ def main() -> None:
         raise SystemExit("HERMES_AGENT_REF cannot be empty")
 
     checkout(destination, ref)
-    # Build/install from the pinned checkout, but do not leave the runtime tied
-    # to that source directory. A normal install remains usable if the checkout
-    # is later cleaned up or replaced.
-    run(sys.executable, "-m", "pip", "install", str(destination))
+    # Hermes 0.20.x deliberately refuses wheel/sdist builds and supports source
+    # installation through an editable checkout. This checkout is therefore a
+    # runtime dependency: Docker keeps it under /opt, and local installs keep it
+    # under .deps unless the caller provides another durable destination.
+    run(sys.executable, "-m", "pip", "install", "-e", str(destination))
 
     # Fail immediately if the source checkout did not install the expected
     # distribution into this exact interpreter.
@@ -82,6 +83,7 @@ def main() -> None:
             "print(f'Hermes Agent installed: {v}')"
         ),
     )
+    print(f"Hermes Agent source checkout (required at runtime): {destination}")
 
 
 if __name__ == "__main__":
