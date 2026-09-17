@@ -34,6 +34,7 @@ def _check_worker(
     worker: WorkerConfig,
     workspace: Path,
     problems: list[str],
+    warnings: list[str],
 ) -> None:
     if worker.backend == "command":
         executable = worker.command[0]
@@ -49,11 +50,17 @@ def _check_worker(
     result = NeMoWorker(worker).validate(workspace)
     if not result.success:
         problems.append(f"{label}: {result.error}")
+        return
+    warnings.extend(
+        f"{label}: {warning}"
+        for warning in result.metadata.get("doctor_warnings", [])
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = _load(args.config)
     problems: list[str] = []
+    warnings: list[str] = []
     if shutil.which("git") is None:
         problems.append("git is not installed")
     else:
@@ -75,12 +82,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             for name, worker in config.team.resolved_workers(config.worker).items()
         )
     for label, worker in workers:
-        _check_worker(label, worker, config.repo_path, problems)
+        _check_worker(label, worker, config.repo_path, problems, warnings)
 
     if problems:
         for item in dict.fromkeys(problems):
             print(f"FAIL: {item}")
         return 1
+    for item in dict.fromkeys(warnings):
+        print(f"WARN: {item}")
     print("OK: configuration, adapters, harnesses, and runtime prerequisites look usable")
     return 0
 
