@@ -29,6 +29,12 @@ _ADAPTER_INSTALL_HINTS = {
     "nvidia.fabric.langchain.deepagents": "nemo-fabric[deepagents]",
     "nvidia.fabric.mini-swe-agent": "nemo-fabric[mini-swe-agent]",
 }
+_HERMES_PROVIDER_API_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
 
 
 def _jsonable(value: Any) -> Any:
@@ -129,6 +135,36 @@ def _nemo_failure(exc: Exception, adapter_id: str) -> str:
             f"Original error: {detail}"
         )
     return f"NeMo Fabric worker failed: {detail}"
+
+
+def _hermes_api_key_env(config: WorkerConfig) -> str | None:
+    if config.adapter_id != "nvidia.fabric.hermes":
+        return None
+    if config.api_key_env:
+        return config.api_key_env
+    provider = str(config.provider or "").strip().lower()
+    api_key_env = _HERMES_PROVIDER_API_KEY_ENV.get(provider)
+    if api_key_env is None:
+        raise RuntimeError(
+            "Hermes requires worker.api_key_env for provider "
+            f"{provider or '<unset>'!r}; Avo cannot infer the credential environment variable."
+        )
+    return api_key_env
+
+
+def _validate_hermes_credentials(config: WorkerConfig) -> str | None:
+    api_key_env = _hermes_api_key_env(config)
+    if api_key_env is None:
+        return None
+    value = config.env.get(api_key_env) or os.environ.get(api_key_env)
+    if value:
+        return api_key_env
+    raise RuntimeError(
+        f"Hermes requires {api_key_env} to be nonempty at runtime. Set it in the Avo process "
+        f"environment or worker.env. The configured provider is {config.provider!r}. "
+        "For an unauthenticated local OpenAI-compatible endpoint, a dummy value such as "
+        "'local' is sufficient; do not use a dummy value for a provider that authenticates requests."
+    )
 
 
 class CommandWorker:
@@ -346,11 +382,14 @@ class NeMoWorker:
         if doctor_status not in {"pass", "warn"}:
             raise RuntimeError(f"NeMo Fabric doctor returned unknown status {doctor_status!r}")
 
+        api_key_env = _validate_hermes_credentials(self.config)
         metadata: dict[str, Any] = {
             "backend": "nemo",
             "adapter_id": self.config.adapter_id,
             "doctor_status": doctor_status,
         }
+        if api_key_env:
+            metadata["api_key_env"] = api_key_env
         if warnings:
             metadata["doctor_warnings"] = warnings
         return WorkerResult(success=True, metadata=metadata)
