@@ -24,7 +24,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     if path.exists() and not args.force:
         print(f"refusing to overwrite {path}; use --force", file=sys.stderr)
         return 2
-    path.write_text(json.dumps(example_config(args.repo), indent=2) + "\n", encoding="utf-8")
+    config = example_config(args.repo)
+    if args.state_dir is not None:
+        config["state_dir"] = args.state_dir
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     print(path)
     return 0
 
@@ -174,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="write an example JSON configuration")
     init.add_argument("--repo", default=".")
     init.add_argument("--output", default="avo.json")
+    init.add_argument(
+        "--state-dir",
+        help="persistent state directory written into the generated configuration",
+    )
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
