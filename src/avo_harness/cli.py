@@ -60,20 +60,7 @@ def _check_worker(
     )
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    config = _load(args.config)
-    problems: list[str] = []
-    warnings: list[str] = []
-    if shutil.which("git") is None:
-        problems.append("git is not installed")
-    else:
-        try:
-            GitRepo(config.repo_path, config.state_path / "worktrees").validate(
-                allow_dirty=config.allow_dirty_repo
-            )
-        except Exception as exc:
-            problems.append(str(exc))
-
+def _configured_workers(config: AVOConfig) -> list[tuple[str, WorkerConfig]]:
     workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
     if config.planner.enabled and config.planner.worker is not None:
         workers.append(("planner", config.planner.worker))
@@ -84,15 +71,43 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             (f"team.roles.{name}", worker)
             for name, worker in config.team.resolved_workers(config.worker).items()
         )
-    for label, worker in workers:
-        _check_worker(label, worker, config.repo_path, problems, warnings)
+    return workers
 
-    if problems:
-        for item in dict.fromkeys(problems):
-            print(f"FAIL: {item}")
-        return 1
-    for item in dict.fromkeys(warnings):
+
+def _check_configured_workers(config: AVOConfig) -> tuple[list[str], list[str]]:
+    problems: list[str] = []
+    warnings: list[str] = []
+    for label, worker in _configured_workers(config):
+        _check_worker(label, worker, config.repo_path, problems, warnings)
+    return list(dict.fromkeys(problems)), list(dict.fromkeys(warnings))
+
+
+def _print_worker_diagnostics(problems: list[str], warnings: list[str]) -> None:
+    for item in problems:
+        print(f"FAIL: {item}")
+    for item in warnings:
         print(f"WARN: {item}")
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    config = _load(args.config)
+    problems: list[str] = []
+    if shutil.which("git") is None:
+        problems.append("git is not installed")
+    else:
+        try:
+            GitRepo(config.repo_path, config.state_path / "worktrees").validate(
+                allow_dirty=config.allow_dirty_repo
+            )
+        except Exception as exc:
+            problems.append(str(exc))
+
+    worker_problems, warnings = _check_configured_workers(config)
+    problems.extend(worker_problems)
+    problems = list(dict.fromkeys(problems))
+    _print_worker_diagnostics(problems, warnings)
+    if problems:
+        return 1
     print("OK: configuration, adapters, harnesses, and runtime prerequisites look usable")
     return 0
 
@@ -147,6 +162,17 @@ def cmd_web(args: argparse.Namespace) -> int:
         print("web dependencies are missing; install avo-harness[web]", file=sys.stderr)
         return 2
     from .api_chat import create_app
+
+    # Fail before binding a port if the configured worker stack cannot actually
+    # resolve its adapter/harness or lacks Hermes' required credential variable.
+    # This intentionally does not call the model endpoint. Connectivity remains
+    # an execution-time concern, but install/runtime mistakes should never hide
+    # behind a web server that appears healthy until its first chat request.
+    config = _load(args.config)
+    problems, warnings = _check_configured_workers(config)
+    _print_worker_diagnostics(problems, warnings)
+    if problems:
+        return 2
 
     uvicorn.run(create_app(args.config), host=args.host, port=args.port, log_level=args.log_level)
     return 0
