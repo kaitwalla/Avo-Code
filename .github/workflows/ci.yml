@@ -31,7 +31,8 @@ jobs:
       - name: Create isolated environment
         run: python -m venv "$RUNNER_TEMP/avo-install"
       - name: Install pinned Hermes Agent source
-        run: "$RUNNER_TEMP/avo-install/bin/python" scripts/install_hermes.py "$RUNNER_TEMP/hermes-agent"
+        run: |
+          "$RUNNER_TEMP/avo-install/bin/python" scripts/install_hermes.py "$RUNNER_TEMP/hermes-agent"
       - name: Install Avo as a package
         run: |
           cd "$GITHUB_WORKSPACE"
