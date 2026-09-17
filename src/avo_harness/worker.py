@@ -4,6 +4,7 @@ import asyncio
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -96,12 +97,14 @@ def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None,
 
 @contextmanager
 def _adapter_python_env(adapter_python: str | None):
-    """Temporarily select an isolated NeMo adapter environment for one worker.
+    """Temporarily select the Python interpreter NeMo uses for adapter hosts.
 
-    NeMo Fabric discovers Python adapter descriptors and their harness through
-    ADAPTER_PYTHON. WorkerConfig.env is already overrideable per role/strategy,
-    so treating that one key as runtime-owned lets Avo mix incompatible harness
-    environments without introducing another configuration surface.
+    NeMo Fabric discovers Python adapter descriptors and launches their harnesses
+    through ADAPTER_PYTHON. WorkerConfig.env can override that interpreter for a
+    role that needs an isolated environment. Otherwise Avo must explicitly use
+    its own sys.executable: relying on PATH can make descriptor discovery happen
+    in Avo's virtualenv while the persistent adapter host launches from a system
+    Python that cannot import the adapter package.
 
     ADAPTER_PYTHON lives in process-global os.environ, so every NeMo call must
     participate in the same lock. Otherwise a worker without an override can run
@@ -121,6 +124,13 @@ def _adapter_python_env(adapter_python: str | None):
                     os.environ.pop("ADAPTER_PYTHON", None)
                 else:
                     os.environ["ADAPTER_PYTHON"] = previous
+
+
+def _effective_adapter_python(config: WorkerConfig) -> str:
+    """Return the interpreter Fabric should use to discover and launch adapters."""
+
+    configured = config.env.get("ADAPTER_PYTHON", "").strip()
+    return configured or sys.executable
 
 
 def _nemo_failure(exc: Exception, adapter_id: str) -> str:
@@ -235,13 +245,12 @@ class NeMoWorker:
 
     def run(self, prompt: str, workspace: Path) -> WorkerResult:
         started = time.monotonic()
-        adapter_python = self.config.env.get("ADAPTER_PYTHON")
+        adapter_python = _effective_adapter_python(self.config)
         try:
             with _adapter_python_env(adapter_python):
                 result = asyncio.run(self._run(prompt, workspace))
             result.duration_seconds = time.monotonic() - started
-            if adapter_python:
-                result.metadata["adapter_python"] = adapter_python
+            result.metadata["adapter_python"] = adapter_python
             return result
         except Exception as exc:
             return self._failure_result(exc, started, adapter_python)
@@ -250,13 +259,12 @@ class NeMoWorker:
         """Resolve and diagnose the configured adapter without calling a model."""
 
         started = time.monotonic()
-        adapter_python = self.config.env.get("ADAPTER_PYTHON")
+        adapter_python = _effective_adapter_python(self.config)
         try:
             with _adapter_python_env(adapter_python):
                 result = asyncio.run(self._validate(workspace))
             result.duration_seconds = time.monotonic() - started
-            if adapter_python:
-                result.metadata["adapter_python"] = adapter_python
+            result.metadata["adapter_python"] = adapter_python
             return result
         except Exception as exc:
             return self._failure_result(exc, started, adapter_python)
@@ -301,10 +309,6 @@ class NeMoWorker:
             "metadata": {"name": "avo-worker"},
             "harness": {
                 "adapter_id": self.config.adapter_id,
-                # Avo installs adapter packages up front, either in its own
-                # environment or in ADAPTER_PYTHON. Tell Fabric to use those
-                # installed descriptors explicitly instead of leaving resolution
-                # ambiguous and warning at runtime.
                 "resolution": "preinstalled",
                 "settings": self.config.harness_settings,
             },
