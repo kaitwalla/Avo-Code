@@ -46,10 +46,68 @@ jobs:
             --repo "$GITHUB_WORKSPACE" \
             --state-dir "$RUNNER_TEMP/avo-state" \
             --output "$RUNNER_TEMP/avo.json"
-          "$RUNNER_TEMP/avo-install/bin/avo-harness" doctor -c "$RUNNER_TEMP/avo.json"
+          OPENAI_API_KEY=local \
+            "$RUNNER_TEMP/avo-install/bin/avo-harness" doctor -c "$RUNNER_TEMP/avo.json"
+      - name: Execute real NeMo Hermes turn
+        run: |
+          "$RUNNER_TEMP/avo-install/bin/python" \
+            "$GITHUB_WORKSPACE/tests/support/openai_smoke_server.py" 18080 \
+            >"$RUNNER_TEMP/openai-smoke.log" 2>&1 &
+          fixture_pid=$!
+          cleanup() {
+            kill "$fixture_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/v1/models >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.25
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat "$RUNNER_TEMP/openai-smoke.log"
+            exit 1
+          fi
+
+          cd "$RUNNER_TEMP"
+          OPENAI_API_KEY=smoke "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+
+          from avo_harness.config import WorkerConfig
+          from avo_harness.worker import NeMoWorker
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          worker = NeMoWorker(
+              WorkerConfig(
+                  backend="nemo",
+                  adapter_id="nvidia.fabric.hermes",
+                  provider="openai",
+                  model="local-open-model",
+                  base_url="http://127.0.0.1:18080/v1",
+                  env={"OPENAI_API_KEY": "smoke"},
+                  max_turns=1,
+                  timeout_seconds=30,
+                  system_prompt=(
+                      "This is an installation smoke test. Do not use tools. "
+                      "Return the model response directly."
+                  ),
+              )
+          )
+          preflight = worker.validate(workspace)
+          assert preflight.success, preflight.error
+          result = worker.run("Reply exactly AVO_HERMES_SMOKE_OK", workspace)
+          assert result.success, result.error
+          assert "AVO_HERMES_SMOKE_OK" in result.output, result.output
+          print(result.output)
+          PY
       - name: Boot installed API and exercise chat routes
         run: |
           cd "$RUNNER_TEMP"
+          OPENAI_API_KEY=local \
           AVO_AUTH_DISABLED=1 \
           AVO_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
             "$RUNNER_TEMP/avo-install/bin/avo-harness" web \
@@ -149,11 +207,20 @@ jobs:
             avo-code-ci \
             init --repo /workspace --state-dir /data/state --output /data/avo.json
 
+          docker run --rm \
+            --entrypoint avo-harness \
+            -e OPENAI_API_KEY=local \
+            -v "$smoke/data:/data" \
+            -v "$smoke/repo:/workspace" \
+            avo-code-ci \
+            doctor -c /data/avo.json
+
           docker run -d \
             --name avo-code-smoke \
             -p 127.0.0.1:8765:8765 \
             -v "$smoke/data:/data" \
             -v "$smoke/repo:/workspace" \
+            -e OPENAI_API_KEY=local \
             -e AVO_AUTH_DISABLED=1 \
             -e AVO_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
             avo-code-ci
