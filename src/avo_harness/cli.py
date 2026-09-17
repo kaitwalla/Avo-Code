@@ -12,6 +12,7 @@ from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
 from .store import Store
+from .worker import NeMoWorker
 
 
 def _load(path: str) -> AVOConfig:
@@ -28,16 +29,26 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _check_worker(label: str, worker: WorkerConfig, problems: list[str]) -> None:
+def _check_worker(
+    label: str,
+    worker: WorkerConfig,
+    workspace: Path,
+    problems: list[str],
+) -> None:
     if worker.backend == "command":
         executable = worker.command[0]
         if "{" not in executable and shutil.which(executable) is None:
             problems.append(f"{label} executable not found: {executable}")
-    else:
-        try:
-            import nemo_fabric  # noqa: F401
-        except ImportError:
-            problems.append(f"{label}: nemo_fabric is not installed; install avo-harness[nemo]")
+        return
+
+    # Importing nemo_fabric alone is not a usable-runtime check. The runtime can
+    # import while having zero discoverable adapter descriptors, which is exactly
+    # the failure mode that produces "available adapters: []" at execution time.
+    # NeMoWorker.validate resolves the configured adapter and runs Fabric.doctor
+    # without contacting the model.
+    result = NeMoWorker(worker).validate(workspace)
+    if not result.success:
+        problems.append(f"{label}: {result.error}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -64,13 +75,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             for name, worker in config.team.resolved_workers(config.worker).items()
         )
     for label, worker in workers:
-        _check_worker(label, worker, problems)
+        _check_worker(label, worker, config.repo_path, problems)
 
     if problems:
         for item in dict.fromkeys(problems):
             print(f"FAIL: {item}")
         return 1
-    print("OK: configuration and runtime prerequisites look usable")
+    print("OK: configuration, adapters, harnesses, and runtime prerequisites look usable")
     return 0
 
 
