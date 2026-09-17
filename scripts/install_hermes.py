@@ -66,7 +66,10 @@ def main() -> None:
         raise SystemExit("HERMES_AGENT_REF cannot be empty")
 
     checkout(destination, ref)
-    run(sys.executable, "-m", "pip", "install", "-e", str(destination))
+    # Build/install from the pinned checkout, but do not leave the runtime tied
+    # to that source directory. A normal install remains usable if the checkout
+    # is later cleaned up or replaced.
+    run(sys.executable, "-m", "pip", "install", str(destination))
 
     # Fail immediately if the source checkout did not install the expected
     # distribution into this exact interpreter.
