@@ -107,19 +107,31 @@ export AVO_APPLE_TEAM_ID=YOUR_APPLE_TEAM_ID
 
 ### Unified Docker image
 
-The root `Dockerfile` builds the Expo web frontend and copies it into the Python runtime image, so frontend and backend deploy together. It also installs the pinned Hermes Agent source plus the matching NeMo Fabric Hermes adapter, then runs Avo's adapter/harness preflight during the image build:
+The root `Dockerfile` builds the Expo web frontend and copies it into the Python runtime image, so frontend and backend deploy together. It also installs the pinned Hermes Agent source plus the matching NeMo Fabric Hermes adapter, then runs Avo's adapter/harness preflight during the image build.
+
+Build the image, then generate a container-valid configuration once. The repository must be mounted at the same path recorded in `avo.json`, and Avo state must live on a persistent mount so passkeys, conversations, runs, and worktree metadata survive container replacement:
 
 ```bash
 docker build -t avo-code .
+mkdir -p /srv/avo
+
+docker run --rm \
+  --entrypoint avo-harness \
+  -v /srv/avo:/data \
+  -v /path/to/repository:/workspace \
+  avo-code \
+  init --repo /workspace --state-dir /data/state --output /data/avo.json
+
 docker run --rm \
   -p 8765:8765 \
   -v /srv/avo:/data \
+  -v /path/to/repository:/workspace \
   -e AVO_PUBLIC_ORIGIN=https://avo.penginlab.com \
   -e AVO_APPLE_TEAM_ID=YOUR_APPLE_TEAM_ID \
   avo-code
 ```
 
-The default container command expects `/data/avo.json` and serves on port `8765`.
+The default container command expects `/data/avo.json` and serves on port `8765`. Mount any additional repository paths referenced by `.avo/access.yaml` as well. Do not point `state_dir` at the container's home directory for a replaceable deployment; use `/data/state` or another persisted path.
 
 ### Local development
 
@@ -140,7 +152,7 @@ avo-harness init --repo /path/to/repository --output avo.json
 avo-harness doctor -c avo.json
 ```
 
-`avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter and runs NeMo Fabric's diagnostics without calling the model. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request.
+`avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter and runs NeMo Fabric's diagnostics without calling the model. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request. Advisory NeMo diagnostics are printed as `WARN`; actual failed checks make `doctor` fail.
 
 `python scripts/install_hermes.py` installs into the Python interpreter used to invoke it and checks out the source under `.deps/hermes-agent` by default. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release. For a separate harness virtualenv, install Hermes and the matching adapter there and set that worker's `env.ADAPTER_PYTHON` to the virtualenv's Python executable.
 
