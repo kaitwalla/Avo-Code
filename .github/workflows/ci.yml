@@ -104,10 +104,30 @@ jobs:
           assert "AVO_HERMES_SMOKE_OK" in result.output, result.output
           print(result.output)
           PY
-      - name: Boot installed API and exercise chat routes
+      - name: Boot installed API and complete a chat message
         run: |
+          "$RUNNER_TEMP/avo-install/bin/python" \
+            "$GITHUB_WORKSPACE/tests/support/openai_smoke_server.py" 18080 \
+            >"$RUNNER_TEMP/openai-chat-smoke.log" 2>&1 &
+          fixture_pid=$!
+
+          "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"], "avo.json")
+          config = json.loads(path.read_text())
+          config["worker"]["provider"] = "openai"
+          config["worker"]["model"] = "local-open-model"
+          config["worker"]["base_url"] = "http://127.0.0.1:18080/v1"
+          config["worker"]["max_turns"] = 1
+          config["worker"]["timeout_seconds"] = 30
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
           cd "$RUNNER_TEMP"
-          OPENAI_API_KEY=local \
+          OPENAI_API_KEY=smoke \
           AVO_AUTH_DISABLED=1 \
           AVO_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
             "$RUNNER_TEMP/avo-install/bin/avo-harness" web \
@@ -118,6 +138,7 @@ jobs:
           server_pid=$!
           cleanup() {
             kill "$server_pid" 2>/dev/null || true
+            kill "$fixture_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
 
@@ -131,30 +152,54 @@ jobs:
           done
           if [ "$healthy" -ne 1 ]; then
             cat "$RUNNER_TEMP/avo-web.log"
+            cat "$RUNNER_TEMP/openai-chat-smoke.log"
             exit 1
           fi
 
           "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
           import json
           import os
+          import time
+          import urllib.request
           from pathlib import Path
 
-          health = json.loads(Path(os.environ["RUNNER_TEMP"], "health.json").read_text())
+          root = Path(os.environ["RUNNER_TEMP"])
+          health = json.loads((root / "health.json").read_text())
           assert health["ok"] is True
-          assert Path(health["state_dir"]) == Path(os.environ["RUNNER_TEMP"], "avo-state")
-          PY
-          curl -fsS http://127.0.0.1:8765/api/chat/conversations >"$RUNNER_TEMP/conversations.json"
-          "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          assert Path(health["state_dir"]) == root / "avo-state"
 
-          conversations = json.loads(
-              Path(os.environ["RUNNER_TEMP"], "conversations.json").read_text()
-          )
+          with urllib.request.urlopen("http://127.0.0.1:8765/api/chat/conversations") as response:
+              conversations = json.load(response)
           assert isinstance(conversations, list)
           for conversation in conversations:
               assert {"id", "title", "created_at", "updated_at", "message_count"} <= set(conversation)
+
+          request = urllib.request.Request(
+              "http://127.0.0.1:8765/api/chat/messages",
+              data=json.dumps(
+                  {"content": "Return a short installation smoke-test answer.", "auto_execute": False}
+              ).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request) as response:
+              user_message = json.load(response)
+          assert user_message["role"] == "user"
+
+          for _ in range(60):
+              with urllib.request.urlopen("http://127.0.0.1:8765/api/chat/messages?limit=100") as response:
+                  messages = json.load(response)
+              assistants = [item for item in messages if item.get("role") == "assistant"]
+              if assistants:
+                  latest = assistants[-1]
+                  if latest.get("status") == "error":
+                      raise AssertionError(latest)
+                  if latest.get("status") == "complete":
+                      assert "AVO_HERMES_SMOKE_OK" in latest.get("content", ""), latest
+                      break
+              time.sleep(0.5)
+          else:
+              raise AssertionError(f"assistant message did not complete: {messages!r}")
           PY
 
   ui:
