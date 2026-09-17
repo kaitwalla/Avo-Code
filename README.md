@@ -107,7 +107,7 @@ export AVO_APPLE_TEAM_ID=YOUR_APPLE_TEAM_ID
 
 ### Unified Docker image
 
-The root `Dockerfile` builds the Expo web frontend and copies it into the Python runtime image, so frontend and backend deploy together:
+The root `Dockerfile` builds the Expo web frontend and copies it into the Python runtime image, so frontend and backend deploy together. It also installs the pinned Hermes Agent source plus the matching NeMo Fabric Hermes adapter, then runs Avo's adapter/harness preflight during the image build:
 
 ```bash
 docker build -t avo-code .
@@ -123,10 +123,30 @@ The default container command expects `/data/avo.json` and serves on port `8765`
 
 ### Local development
 
-Backend:
+The generated default configuration uses NeMo Fabric's Hermes adapter. A usable local installation therefore needs **Python 3.11–3.13**, Hermes Agent 0.20+ installed from source, and the `nemo` extra. Installing only `.[web]` is not enough.
+
+The supported local setup is:
 
 ```bash
-python -m pip install -e '.[web]'
+python3.12 -m venv .venv
+source .venv/bin/activate
+
+# Installs the same pinned Hermes source ref used by Docker and CI.
+python scripts/install_hermes.py
+python -m pip install -e '.[web,nemo,dev]'
+python -m pip check
+
+avo-harness init --repo /path/to/repository --output avo.json
+avo-harness doctor -c avo.json
+```
+
+`avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter and runs NeMo Fabric's diagnostics without calling the model. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request.
+
+`python scripts/install_hermes.py` installs into the Python interpreter used to invoke it and checks out the source under `.deps/hermes-agent` by default. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release. For a separate harness virtualenv, install Hermes and the matching adapter there and set that worker's `env.ADAPTER_PYTHON` to the virtualenv's Python executable.
+
+Start the backend after `doctor` passes:
+
+```bash
 AVO_PUBLIC_ORIGIN=http://localhost:8765 \
 AVO_AUTH_DISABLED=1 \
 avo-harness web -c avo.json --host 0.0.0.0 --port 8765
