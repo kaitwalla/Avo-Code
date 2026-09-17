@@ -121,11 +121,32 @@ docker run --rm \
   -v /path/to/repository:/workspace \
   avo-code \
   init --repo /workspace --state-dir /data/state --output /data/avo.json
+```
 
+The generated worker uses an OpenAI-compatible endpoint at `http://127.0.0.1:8000/v1`. Inside Docker, `127.0.0.1` means the Avo container itself. If the model server runs elsewhere, edit `/srv/avo/avo.json` so `worker.base_url` is reachable **from inside the Avo container**, for example a Compose service name, `host.docker.internal` where supported, or another routable host address.
+
+Hermes also requires the provider's API-key environment variable to be nonempty. For the default `provider: "openai"`, that is `OPENAI_API_KEY`. An unauthenticated local OpenAI-compatible endpoint may use a dummy nonempty value such as `local`; a provider that authenticates requests needs the real credential.
+
+Validate the final runtime configuration before starting the service:
+
+```bash
+docker run --rm \
+  --entrypoint avo-harness \
+  -v /srv/avo:/data \
+  -v /path/to/repository:/workspace \
+  -e OPENAI_API_KEY=local \
+  avo-code \
+  doctor -c /data/avo.json
+```
+
+Then run Avo with the same repository mounts, model credentials, and network reachability:
+
+```bash
 docker run --rm \
   -p 8765:8765 \
   -v /srv/avo:/data \
   -v /path/to/repository:/workspace \
+  -e OPENAI_API_KEY=local \
   -e AVO_PUBLIC_ORIGIN=https://avo.penginlab.com \
   -e AVO_APPLE_TEAM_ID=YOUR_APPLE_TEAM_ID \
   avo-code
@@ -149,16 +170,23 @@ python -m pip install -e '.[web,nemo,dev]'
 python -m pip check
 
 avo-harness init --repo /path/to/repository --output avo.json
+
+# For the generated OpenAI-compatible local worker. Use the real key instead
+# when the configured endpoint authenticates requests.
+export OPENAI_API_KEY=local
 avo-harness doctor -c avo.json
 ```
 
-`avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter and runs NeMo Fabric's diagnostics without calling the model. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request. Advisory NeMo diagnostics are printed as `WARN`; actual failed checks make `doctor` fail.
+`avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter, runs NeMo Fabric's diagnostics without calling the model, and checks Hermes' required credential environment. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, a missing provider key, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request. Advisory NeMo diagnostics are printed as `WARN`; actual failed checks make `doctor` fail.
 
-`python scripts/install_hermes.py` installs into the Python interpreter used to invoke it and checks out the source under `.deps/hermes-agent` by default. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release. For a separate harness virtualenv, install Hermes and the matching adapter there and set that worker's `env.ADAPTER_PYTHON` to the virtualenv's Python executable.
+By default Avo explicitly tells NeMo Fabric to launch adapter hosts with the same Python interpreter that is running Avo. This matters for virtualenv installs: relying on `python` from `PATH` can make discovery succeed in the Avo environment while the real adapter subprocess starts under system Python and fails to import `nemo_fabric_adapters`. If a harness genuinely needs a separate environment, install its harness and matching adapter there and set that worker's `env.ADAPTER_PYTHON` to the separate virtualenv's Python executable.
+
+`python scripts/install_hermes.py` installs into the Python interpreter used to invoke it and checks out the source under `.deps/hermes-agent` by default. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release.
 
 Start the backend after `doctor` passes:
 
 ```bash
+OPENAI_API_KEY=local \
 AVO_PUBLIC_ORIGIN=http://localhost:8765 \
 AVO_AUTH_DISABLED=1 \
 avo-harness web -c avo.json --host 0.0.0.0 --port 8765
