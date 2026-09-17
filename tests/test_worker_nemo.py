@@ -20,20 +20,24 @@ class FakeFabricConfig:
 
 class FakeFabric:
     last_config = None
+    last_base_dir = None
     adapter_python_seen = None
 
-    def plan(self, config):
+    def plan(self, config, *, base_dir=None):
         type(self).last_config = config
+        type(self).last_base_dir = base_dir
         return SimpleNamespace(
             adapter=SimpleNamespace(adapter_id=config["harness"]["adapter_id"])
         )
 
-    async def doctor(self, config):
+    async def doctor(self, config, *, base_dir=None):
         type(self).last_config = config
+        type(self).last_base_dir = base_dir
         return SimpleNamespace(status="pass", checks=[])
 
-    async def run(self, config, *, input):
+    async def run(self, config, *, base_dir=None, input):
         type(self).last_config = config
+        type(self).last_base_dir = base_dir
         type(self).adapter_python_seen = os.environ.get("ADAPTER_PYTHON")
         return SimpleNamespace(
             output=SimpleNamespace(response=f"done: {input}"),
@@ -46,7 +50,9 @@ class FakeFabric:
 
 
 class FailingDoctorFabric(FakeFabric):
-    async def doctor(self, config):
+    async def doctor(self, config, *, base_dir=None):
+        type(self).last_config = config
+        type(self).last_base_dir = base_dir
         return SimpleNamespace(
             status="fail",
             checks=[
@@ -59,8 +65,25 @@ class FailingDoctorFabric(FakeFabric):
         )
 
 
+class WarningDoctorFabric(FakeFabric):
+    async def doctor(self, config, *, base_dir=None):
+        type(self).last_config = config
+        type(self).last_base_dir = base_dir
+        return SimpleNamespace(
+            status="warn",
+            checks=[
+                SimpleNamespace(
+                    status="warn",
+                    name="model.connectivity",
+                    message="model endpoint was not contacted during preflight",
+                )
+            ],
+        )
+
+
 def install_fake_fabric(monkeypatch, fabric_class=FakeFabric) -> None:
     FakeFabric.last_config = None
+    FakeFabric.last_base_dir = None
     FakeFabric.adapter_python_seen = None
     monkeypatch.setitem(
         sys.modules,
@@ -88,6 +111,7 @@ def test_codex_omits_unsupported_max_turns(monkeypatch, tmp_path: Path) -> None:
 
     assert result.success is True
     assert FakeFabric.last_config["runtime"] == {"timeout_seconds": 91}
+    assert FakeFabric.last_base_dir == tmp_path
 
 
 def test_hermes_keeps_max_turns(monkeypatch, tmp_path: Path) -> None:
@@ -101,6 +125,7 @@ def test_hermes_keeps_max_turns(monkeypatch, tmp_path: Path) -> None:
         "timeout_seconds": 91,
         "max_turns": 37,
     }
+    assert FakeFabric.last_base_dir == tmp_path
 
 
 def test_validate_resolves_adapter_and_runs_doctor(monkeypatch, tmp_path: Path) -> None:
@@ -113,6 +138,7 @@ def test_validate_resolves_adapter_and_runs_doctor(monkeypatch, tmp_path: Path) 
     assert result.metadata["adapter_id"] == "nvidia.fabric.hermes"
     assert result.metadata["doctor_status"] == "pass"
     assert FakeFabric.last_config["harness"]["adapter_id"] == "nvidia.fabric.hermes"
+    assert FakeFabric.last_base_dir == tmp_path
 
 
 def test_validate_reports_doctor_failures(monkeypatch, tmp_path: Path) -> None:
@@ -124,6 +150,19 @@ def test_validate_reports_doctor_failures(monkeypatch, tmp_path: Path) -> None:
     assert result.success is False
     assert "adapter.requirements" in result.error
     assert "Hermes Agent is not installed" in result.error
+
+
+def test_validate_preserves_doctor_warnings_without_failing(monkeypatch, tmp_path: Path) -> None:
+    install_fake_fabric(monkeypatch, WarningDoctorFabric)
+    worker = NeMoWorker(nemo_config("nvidia.fabric.hermes"))
+
+    result = worker.validate(tmp_path)
+
+    assert result.success is True
+    assert result.metadata["doctor_status"] == "warn"
+    assert result.metadata["doctor_warnings"] == [
+        "model.connectivity: model endpoint was not contacted during preflight"
+    ]
 
 
 def test_adapter_python_is_scoped_to_one_worker(monkeypatch, tmp_path: Path) -> None:
