@@ -1,0 +1,71 @@
+name: Avo Adapter Matrix
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  adapter-discovery:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: codex
+            adapter: nvidia.fabric.codex
+          - extra: claude
+            adapter: nvidia.fabric.claude
+          - extra: deepagents
+            adapter: nvidia.fabric.langchain.deepagents
+          - extra: mini-swe-agent
+            adapter: nvidia.fabric.mini-swe-agent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Create isolated environment
+        run: python -m venv "$RUNNER_TEMP/avo-adapter"
+      - name: Install Avo and adapter
+        env:
+          AVO_ADAPTER_EXTRA: ${{ matrix.extra }}
+        run: |
+          "$RUNNER_TEMP/avo-adapter/bin/python" -m pip install ".[${AVO_ADAPTER_EXTRA}]"
+          "$RUNNER_TEMP/avo-adapter/bin/python" -m pip check
+      - name: Resolve and plan installed adapter
+        env:
+          AVO_ADAPTER_ID: ${{ matrix.adapter }}
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/avo-adapter/bin/python" - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          from nemo_fabric import Fabric
+
+          from avo_harness.config import WorkerConfig
+          from avo_harness.worker import NeMoWorker, _adapter_python_env
+
+          adapter_id = os.environ["AVO_ADAPTER_ID"]
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          config = WorkerConfig(
+              backend="nemo",
+              adapter_id=adapter_id,
+              provider="openai",
+              model="smoke",
+              api_key_env="OPENAI_API_KEY",
+              base_url="http://127.0.0.1:1/v1",
+              env={"OPENAI_API_KEY": "smoke"},
+              timeout_seconds=5,
+          )
+          worker = NeMoWorker(config)
+          with _adapter_python_env(sys.executable):
+              fabric_config = worker._fabric_config(workspace)
+              plan = Fabric().plan(fabric_config, base_dir=workspace)
+          resolved = getattr(getattr(plan, "adapter", None), "adapter_id", None)
+          assert resolved == adapter_id, (resolved, adapter_id)
+          print(f"resolved {adapter_id} with {sys.executable}")
+          PY
