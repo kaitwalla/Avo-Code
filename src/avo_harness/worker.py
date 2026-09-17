@@ -61,13 +61,10 @@ def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None,
     if not isinstance(raw, dict):
         return None, None, None, raw if raw is not None else None
 
-    # NeMo adapters/providers do not all use the same field names. Prefer the
-    # normalized names, then accept common OpenAI/LangChain aliases.
     input_tokens = _number(raw, "input_tokens", "prompt_tokens", "input")
     output_tokens = _number(raw, "output_tokens", "completion_tokens", "output")
     cost = _number(raw, "cost_usd", "total_cost_usd", "cost")
 
-    # Some providers wrap usage in a nested token_usage/usage object.
     if input_tokens is None or output_tokens is None or cost is None:
         for key in ("token_usage", "usage", "tokens"):
             nested = raw.get(key)
@@ -255,18 +252,12 @@ class NeMoWorker:
                 "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
             ) from exc
 
-        # ADAPTER_PYTHON selects the adapter host interpreter and must be visible
-        # to the Fabric runtime process, not forwarded as a harness environment
-        # variable. Other configured variables remain harness-visible.
         harness_env = dict(self.config.env)
         harness_env.pop("ADAPTER_PYTHON", None)
 
         runtime: dict[str, Any] = {
             "timeout_seconds": self.config.timeout_seconds,
         }
-        # max_turns is a normalized optional capability, not a universal one.
-        # Codex intentionally has no mapping for it; including Avo's default of
-        # 24 makes Fabric reject an otherwise valid Codex configuration.
         if self.config.adapter_id not in _MAX_TURNS_UNSUPPORTED_ADAPTERS:
             runtime["max_turns"] = self.config.max_turns
 
@@ -274,6 +265,11 @@ class NeMoWorker:
             "metadata": {"name": "avo-worker"},
             "harness": {
                 "adapter_id": self.config.adapter_id,
+                # Avo installs adapter packages up front, either in its own
+                # environment or in ADAPTER_PYTHON. Tell Fabric to use those
+                # installed descriptors explicitly instead of leaving resolution
+                # ambiguous and warning at runtime.
+                "resolution": "preinstalled",
                 "settings": self.config.harness_settings,
             },
             "instructions": {
@@ -331,10 +327,6 @@ class NeMoWorker:
                 f"NeMo Fabric planned adapter {resolved_adapter!r}, expected {self.config.adapter_id!r}"
             )
 
-        # NeMo's doctor goes beyond descriptor discovery: it validates declared
-        # adapter/harness requirements and environment assumptions without
-        # starting a runtime or contacting the configured model. Warnings are
-        # advisory; only a failed diagnostic makes the worker unusable.
         report = await fabric.doctor(config, base_dir=workspace)
         doctor_status = str(getattr(report, "status", "unknown"))
         failures = []
