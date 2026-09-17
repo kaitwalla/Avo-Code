@@ -2,6 +2,7 @@ name: Avo Adapter Matrix
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
