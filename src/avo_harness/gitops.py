@@ -1,21 +1,65 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 
 class GitError(RuntimeError):
     pass
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        text=True,
-        capture_output=True,
+def _git_config_value(value: str) -> str:
+    """Quote a value for Git's config-file syntax."""
+
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
     )
+    return f'"{escaped}"'
+
+
+@contextmanager
+def _trusted_repo_env(repo: Path) -> Iterator[dict[str, str]]:
+    """Give one Git subprocess a protected exact-path safe.directory entry.
+
+    Host bind mounts commonly appear to be owned by a different UID inside a
+    container, which makes modern Git reject them before Avo can even inspect the
+    repository. Writing `safe.directory=*` would disable that protection globally.
+    Instead, each Avo Git command receives a short-lived global config containing
+    only the exact path it was asked to operate on. The user's normal environment
+    remains untouched after the subprocess exits.
+    """
+
+    trusted = repo.resolve()
+    env = os.environ.copy()
+    with tempfile.TemporaryDirectory(prefix="avo-git-config-") as directory:
+        config = Path(directory) / "gitconfig"
+        config.write_text(
+            "[safe]\n"
+            f"\tdirectory = {_git_config_value(str(trusted))}\n",
+            encoding="utf-8",
+        )
+        env["GIT_CONFIG_GLOBAL"] = str(config)
+        yield env
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    repo = repo.resolve()
+    with _trusted_repo_env(repo) as env:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            env=env,
+        )
     if check and proc.returncode != 0:
         raise GitError(proc.stderr.strip() or proc.stdout.strip() or "git command failed")
     return proc
@@ -70,24 +114,16 @@ class GitRepo:
         if not status:
             return _git(worktree.path, "rev-parse", "HEAD").stdout.strip()
         _git(worktree.path, "add", "-A")
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(worktree.path),
-                "-c",
-                "user.name=AVO Harness",
-                "-c",
-                "user.email=avo-harness@localhost",
-                "commit",
-                "-m",
-                message,
-            ],
-            text=True,
-            capture_output=True,
+        _git(
+            worktree.path,
+            "-c",
+            "user.name=AVO Harness",
+            "-c",
+            "user.email=avo-harness@localhost",
+            "commit",
+            "-m",
+            message,
         )
-        if proc.returncode != 0:
-            raise GitError(proc.stderr.strip() or proc.stdout.strip())
         return _git(worktree.path, "rev-parse", "HEAD").stdout.strip()
 
     def remove_worktree(self, worktree: Worktree) -> None:
