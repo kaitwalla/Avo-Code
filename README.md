@@ -179,9 +179,37 @@ avo-harness doctor -c avo.json
 
 `avo-harness doctor` does not merely import `nemo_fabric`. It resolves every configured NeMo adapter, runs NeMo Fabric's diagnostics without calling the model, and checks Hermes' required credential environment. An environment with `available adapters: []`, a missing Hermes harness, an incompatible adapter configuration, a missing provider key, or a broken `ADAPTER_PYTHON` environment fails here instead of at the first coding request. Advisory NeMo diagnostics are printed as `WARN`; actual failed checks make `doctor` fail.
 
-By default Avo explicitly tells NeMo Fabric to launch adapter hosts with the same Python interpreter that is running Avo. This matters for virtualenv installs: relying on `python` from `PATH` can make discovery succeed in the Avo environment while the real adapter subprocess starts under system Python and fails to import `nemo_fabric_adapters`. If a harness genuinely needs a separate environment, install its harness and matching adapter there and set that worker's `env.ADAPTER_PYTHON` to the separate virtualenv's Python executable.
+By default Avo explicitly tells NeMo Fabric to launch adapter hosts with the same Python interpreter that is running Avo. This matters for virtualenv installs: relying on `python` from `PATH` can make discovery succeed in the Avo environment while the real adapter subprocess starts under system Python and fails to import `nemo_fabric_adapters`.
 
-`python scripts/install_hermes.py` installs into the Python interpreter used to invoke it and checks out the source under `.deps/hermes-agent` by default. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release.
+Hermes 0.20.x deliberately refuses wheel/sdist builds. `python scripts/install_hermes.py` therefore performs Hermes' supported editable source install into the interpreter used to invoke it. The default checkout is `.deps/hermes-agent`; **that checkout is a runtime dependency and must not be deleted while the environment uses it**. Docker keeps the corresponding checkout under `/opt/hermes-agent`. Set `HERMES_AGENT_REF` only when intentionally testing a different Hermes release.
+
+If Hermes or another harness needs a separate dependency environment, keep Avo's main environment on the Fabric runtime and put the harness plus matching adapter in a second virtualenv:
+
+```bash
+# Avo environment: Fabric runtime, web app, and Avo itself.
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e '.[web,fabric,dev]'
+
+# Hermes adapter environment: adapter package plus the pinned Hermes source.
+python3.12 -m venv .venv-hermes
+.venv-hermes/bin/python -m pip install 'nemo-fabric[hermes-agent]==0.2.0'
+.venv-hermes/bin/python scripts/install_hermes.py .deps/hermes-agent-isolated
+```
+
+Then set the relevant worker in `avo.json` to the second interpreter while leaving model credentials alongside it or in Avo's process environment:
+
+```json
+{
+  "backend": "nemo",
+  "adapter_id": "nvidia.fabric.hermes",
+  "env": {
+    "ADAPTER_PYTHON": "/absolute/path/to/.venv-hermes/bin/python",
+    "OPENAI_API_KEY": "local"
+  }
+}
+```
+
+Avo's CI executes a real Hermes turn using exactly this split-environment arrangement, so this is a tested deployment path rather than a fallback guess.
 
 Start the backend after `doctor` passes:
 
