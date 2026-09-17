@@ -2,6 +2,7 @@ name: AVO Harness
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -183,8 +184,9 @@ jobs:
               method="POST",
           )
           with urllib.request.urlopen(request) as response:
-              user_message = json.load(response)
-          assert user_message["role"] == "user"
+              accepted = json.load(response)
+          assert accepted["accepted"] is True, accepted
+          assert accepted["conversation_id"] == "main", accepted
 
           for _ in range(60):
               with urllib.request.urlopen("http://127.0.0.1:8765/api/chat/messages?limit=100") as response:
