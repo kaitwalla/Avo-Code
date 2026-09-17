@@ -22,7 +22,10 @@ class Worker(Protocol):
 
 
 _ADAPTER_ENV_LOCK = threading.Lock()
-_MAX_TURNS_UNSUPPORTED_ADAPTERS = {"nvidia.fabric.codex"}
+_MAX_TURNS_UNSUPPORTED_ADAPTERS = {
+    "nvidia.fabric.codex",
+    "nvidia.fabric.langchain.deepagents",
+}
 _ADAPTER_INSTALL_HINTS = {
     "nvidia.fabric.hermes": "nemo-fabric[hermes-agent] plus Hermes Agent 0.20+ from source",
     "nvidia.fabric.codex": "nemo-fabric[codex]",
