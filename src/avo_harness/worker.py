@@ -324,7 +324,7 @@ class NeMoWorker:
 
         config = self._fabric_config(workspace)
         fabric = Fabric()
-        plan = fabric.plan(config)
+        plan = fabric.plan(config, base_dir=workspace)
         resolved_adapter = getattr(getattr(plan, "adapter", None), "adapter_id", None)
         if resolved_adapter != self.config.adapter_id:
             raise RuntimeError(
@@ -333,28 +333,35 @@ class NeMoWorker:
 
         # NeMo's doctor goes beyond descriptor discovery: it validates declared
         # adapter/harness requirements and environment assumptions without
-        # starting a runtime or contacting the configured model.
-        report = await fabric.doctor(config)
+        # starting a runtime or contacting the configured model. Warnings are
+        # advisory; only a failed diagnostic makes the worker unusable.
+        report = await fabric.doctor(config, base_dir=workspace)
         doctor_status = str(getattr(report, "status", "unknown"))
-        if doctor_status != "pass":
-            failures = []
-            for check in getattr(report, "checks", []) or []:
-                if str(getattr(check, "status", "")) != "fail":
-                    continue
-                name = str(getattr(check, "name", "runtime"))
-                message = str(getattr(check, "message", "failed"))
-                failures.append(f"{name}: {message}")
-            detail = "; ".join(failures) or f"overall status {doctor_status}"
+        failures = []
+        warnings = []
+        for check in getattr(report, "checks", []) or []:
+            status = str(getattr(check, "status", ""))
+            name = str(getattr(check, "name", "runtime"))
+            message = str(getattr(check, "message", ""))
+            detail = f"{name}: {message}" if message else name
+            if status == "fail":
+                failures.append(detail)
+            elif status == "warn":
+                warnings.append(detail)
+        if doctor_status == "fail" or failures:
+            detail = "; ".join(failures) or "overall status fail"
             raise RuntimeError(f"NeMo Fabric doctor failed: {detail}")
+        if doctor_status not in {"pass", "warn"}:
+            raise RuntimeError(f"NeMo Fabric doctor returned unknown status {doctor_status!r}")
 
-        return WorkerResult(
-            success=True,
-            metadata={
-                "backend": "nemo",
-                "adapter_id": self.config.adapter_id,
-                "doctor_status": doctor_status,
-            },
-        )
+        metadata: dict[str, Any] = {
+            "backend": "nemo",
+            "adapter_id": self.config.adapter_id,
+            "doctor_status": doctor_status,
+        }
+        if warnings:
+            metadata["doctor_warnings"] = warnings
+        return WorkerResult(success=True, metadata=metadata)
 
     async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
         try:
@@ -365,7 +372,7 @@ class NeMoWorker:
             ) from exc
 
         config = self._fabric_config(workspace)
-        result = await Fabric().run(config, input=prompt)
+        result = await Fabric().run(config, base_dir=workspace, input=prompt)
         output_obj = getattr(result, "output", None)
         response = getattr(output_obj, "response", "") if output_obj is not None else ""
         error_obj = getattr(result, "error", None)
