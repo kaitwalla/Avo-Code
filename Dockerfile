@@ -13,40 +13,36 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-# The production image ships the default Hermes stack only. NeMo Fabric supports
-# separate adapter environments through ADAPTER_PYTHON, which avoids dependency
-# collisions between harnesses (for example Hermes' OpenAI pin vs Deep Agents).
-# Hermes Agent 0.20+ is source-distributed and deliberately refuses wheel/sdist
-# builds, so keep a pinned checkout in the image and install it editable.
-RUN git clone --depth 1 --branch "${HERMES_AGENT_REF}" \
-      https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
-    && python -m pip install --no-cache-dir -e /opt/hermes-agent \
+COPY scripts ./scripts
+# The production image ships the default Hermes stack only. Keep the source
+# checkout/install recipe shared with local development and CI so an environment
+# cannot look healthy merely because the NeMo runtime itself imports.
+RUN PIP_NO_CACHE_DIR=1 HERMES_AGENT_REF="${HERMES_AGENT_REF}" \
+      python scripts/install_hermes.py /opt/hermes-agent \
     && python -m pip install --no-cache-dir '.[web,nemo]' \
     && python -m pip check
-# Importing nemo_fabric alone does not prove the configured descriptor exists.
-# Planning resolves the default adapter and normalized config without contacting
-# a model, so an UnknownAdapter regression fails the image build.
+# Exercise Avo's own no-model preflight. This resolves the configured descriptor
+# and runs Fabric.doctor, which checks adapter/harness runtime requirements.
 RUN python - <<'PY'
-from nemo_fabric import Fabric, FabricConfig
+from pathlib import Path
+
+from avo_harness.config import WorkerConfig
+from avo_harness.worker import NeMoWorker
 
 adapter_id = "nvidia.fabric.hermes"
-payload = {
-    "metadata": {"name": "avo-image-smoke-hermes"},
-    "harness": {"adapter_id": adapter_id, "settings": {}},
-    "runtime": {"max_turns": 1, "timeout_seconds": 1},
-    "environment": {"provider": "local", "workspace": "/tmp", "env": {}},
-    "models": {
-        "default": {
-            "provider": "openai",
-            "model": "smoke",
-            "base_url": "http://127.0.0.1:1/v1",
-        }
-    },
-}
-config = FabricConfig.from_mapping(payload) if hasattr(FabricConfig, "from_mapping") else FabricConfig(**payload)
-plan = Fabric().plan(config)
-assert plan.adapter.adapter_id == adapter_id, plan
-print(f"NeMo Fabric adapter available: {adapter_id}")
+worker = WorkerConfig(
+    backend="nemo",
+    adapter_id=adapter_id,
+    model="smoke",
+    provider="openai",
+    base_url="http://127.0.0.1:1/v1",
+    max_turns=1,
+    timeout_seconds=1,
+)
+result = NeMoWorker(worker).validate(Path("/tmp"))
+if not result.success:
+    raise RuntimeError(result.error)
+print(f"Avo NeMo preflight passed: {adapter_id}")
 PY
 COPY --from=ui-build /build/ui/dist /app/static
 
