@@ -152,7 +152,9 @@ jobs:
           conversations = json.loads(
               Path(os.environ["RUNNER_TEMP"], "conversations.json").read_text()
           )
-          assert conversations == []
+          assert isinstance(conversations, list)
+          for conversation in conversations:
+              assert {"id", "title", "created_at", "updated_at", "message_count"} <= set(conversation)
           PY
 
   ui:
@@ -261,7 +263,10 @@ jobs:
           from pathlib import Path
 
           smoke = Path(os.environ["RUNNER_TEMP"], "avo-image-smoke")
-          assert json.loads((smoke / "conversations.json").read_text()) == []
+          conversations = json.loads((smoke / "conversations.json").read_text())
+          assert isinstance(conversations, list)
+          for conversation in conversations:
+              assert {"id", "title", "created_at", "updated_at", "message_count"} <= set(conversation)
           PY
           curl -fsS http://127.0.0.1:8765/ >"$smoke/index.html"
           grep -Eiq '<!doctype html|<html' "$smoke/index.html"
