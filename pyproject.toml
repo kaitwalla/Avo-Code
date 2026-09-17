@@ -16,6 +16,7 @@ dependencies = ["PyYAML>=6,<7"]
 # adapter extra on the exact runtime release exercised by clean-install CI rather
 # than letting a future 0.2.x publication silently change production behavior.
 # Hermes Agent 0.20+ itself is source-installed by scripts/install_hermes.py.
+fabric = ["nemo-fabric==0.2.0"]
 nemo = ["nemo-fabric[hermes-agent]==0.2.0"]
 deepagents = ["nemo-fabric[deepagents]==0.2.0"]
 codex = ["nemo-fabric[codex]==0.2.0"]
