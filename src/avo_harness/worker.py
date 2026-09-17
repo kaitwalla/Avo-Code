@@ -99,24 +99,25 @@ def _adapter_python_env(adapter_python: str | None):
     ADAPTER_PYTHON. WorkerConfig.env is already overrideable per role/strategy,
     so treating that one key as runtime-owned lets Avo mix incompatible harness
     environments without introducing another configuration surface.
+
+    ADAPTER_PYTHON lives in process-global os.environ, so every NeMo call must
+    participate in the same lock. Otherwise a worker without an override can run
+    while another worker has temporarily set ADAPTER_PYTHON and silently discover
+    the wrong adapter environment.
     """
 
-    if not adapter_python:
-        yield
-        return
-
-    # os.environ is process-global. Serialize only calls that override the
-    # interpreter so parallel workers cannot discover each other's adapters.
     with _ADAPTER_ENV_LOCK:
         previous = os.environ.get("ADAPTER_PYTHON")
-        os.environ["ADAPTER_PYTHON"] = adapter_python
+        if adapter_python:
+            os.environ["ADAPTER_PYTHON"] = adapter_python
         try:
             yield
         finally:
-            if previous is None:
-                os.environ.pop("ADAPTER_PYTHON", None)
-            else:
-                os.environ["ADAPTER_PYTHON"] = previous
+            if adapter_python:
+                if previous is None:
+                    os.environ.pop("ADAPTER_PYTHON", None)
+                else:
+                    os.environ["ADAPTER_PYTHON"] = previous
 
 
 def _nemo_failure(exc: Exception, adapter_id: str) -> str:
@@ -210,22 +211,45 @@ class NeMoWorker:
                 result.metadata["adapter_python"] = adapter_python
             return result
         except Exception as exc:
-            metadata: dict[str, Any] = {
-                "backend": "nemo",
-                "adapter_id": self.config.adapter_id,
-            }
-            if adapter_python:
-                metadata["adapter_python"] = adapter_python
-            return WorkerResult(
-                success=False,
-                error=_nemo_failure(exc, self.config.adapter_id),
-                metadata=metadata,
-                duration_seconds=time.monotonic() - started,
-            )
+            return self._failure_result(exc, started, adapter_python)
 
-    async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
+    def validate(self, workspace: Path) -> WorkerResult:
+        """Resolve and diagnose the configured adapter without calling a model."""
+
+        started = time.monotonic()
+        adapter_python = self.config.env.get("ADAPTER_PYTHON")
         try:
-            from nemo_fabric import Fabric, FabricConfig
+            with _adapter_python_env(adapter_python):
+                result = asyncio.run(self._validate(workspace))
+            result.duration_seconds = time.monotonic() - started
+            if adapter_python:
+                result.metadata["adapter_python"] = adapter_python
+            return result
+        except Exception as exc:
+            return self._failure_result(exc, started, adapter_python)
+
+    def _failure_result(
+        self,
+        exc: Exception,
+        started: float,
+        adapter_python: str | None,
+    ) -> WorkerResult:
+        metadata: dict[str, Any] = {
+            "backend": "nemo",
+            "adapter_id": self.config.adapter_id,
+        }
+        if adapter_python:
+            metadata["adapter_python"] = adapter_python
+        return WorkerResult(
+            success=False,
+            error=_nemo_failure(exc, self.config.adapter_id),
+            metadata=metadata,
+            duration_seconds=time.monotonic() - started,
+        )
+
+    def _fabric_config(self, workspace: Path):
+        try:
+            from nemo_fabric import FabricConfig
         except ImportError as exc:
             raise RuntimeError(
                 "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
@@ -287,10 +311,60 @@ class NeMoWorker:
             payload["telemetry"] = self.config.telemetry
 
         if hasattr(FabricConfig, "from_mapping"):
-            config = FabricConfig.from_mapping(payload)
-        else:
-            config = FabricConfig(**payload)
+            return FabricConfig.from_mapping(payload)
+        return FabricConfig(**payload)
 
+    async def _validate(self, workspace: Path) -> WorkerResult:
+        try:
+            from nemo_fabric import Fabric
+        except ImportError as exc:
+            raise RuntimeError(
+                "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
+            ) from exc
+
+        config = self._fabric_config(workspace)
+        fabric = Fabric()
+        plan = fabric.plan(config)
+        resolved_adapter = getattr(getattr(plan, "adapter", None), "adapter_id", None)
+        if resolved_adapter != self.config.adapter_id:
+            raise RuntimeError(
+                f"NeMo Fabric planned adapter {resolved_adapter!r}, expected {self.config.adapter_id!r}"
+            )
+
+        # NeMo's doctor goes beyond descriptor discovery: it validates declared
+        # adapter/harness requirements and environment assumptions without
+        # starting a runtime or contacting the configured model.
+        report = await fabric.doctor(config)
+        doctor_status = str(getattr(report, "status", "unknown"))
+        if doctor_status != "pass":
+            failures = []
+            for check in getattr(report, "checks", []) or []:
+                if str(getattr(check, "status", "")) != "fail":
+                    continue
+                name = str(getattr(check, "name", "runtime"))
+                message = str(getattr(check, "message", "failed"))
+                failures.append(f"{name}: {message}")
+            detail = "; ".join(failures) or f"overall status {doctor_status}"
+            raise RuntimeError(f"NeMo Fabric doctor failed: {detail}")
+
+        return WorkerResult(
+            success=True,
+            metadata={
+                "backend": "nemo",
+                "adapter_id": self.config.adapter_id,
+                "doctor_status": doctor_status,
+            },
+        )
+
+    async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
+        try:
+            from nemo_fabric import Fabric
+        except ImportError as exc:
+            raise RuntimeError(
+                "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
+            ) from exc
+
+        config = self._fabric_config(workspace)
         result = await Fabric().run(config, input=prompt)
         output_obj = getattr(result, "output", None)
         response = getattr(output_obj, "response", "") if output_obj is not None else ""
