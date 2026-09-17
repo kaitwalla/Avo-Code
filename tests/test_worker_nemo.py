@@ -93,6 +93,7 @@ def install_fake_fabric(monkeypatch, fabric_class=FakeFabric) -> None:
 
 
 def nemo_config(adapter_id: str, **kwargs) -> WorkerConfig:
+    kwargs.setdefault("env", {"OPENAI_API_KEY": "test"})
     return WorkerConfig(
         backend="nemo",
         adapter_id=adapter_id,
@@ -125,6 +126,7 @@ def test_hermes_keeps_max_turns(monkeypatch, tmp_path: Path) -> None:
         "timeout_seconds": 91,
         "max_turns": 37,
     }
+    assert FakeFabric.last_config["harness"]["resolution"] == "preinstalled"
     assert FakeFabric.last_base_dir == tmp_path
 
 
@@ -137,7 +139,9 @@ def test_validate_resolves_adapter_and_runs_doctor(monkeypatch, tmp_path: Path) 
     assert result.success is True
     assert result.metadata["adapter_id"] == "nvidia.fabric.hermes"
     assert result.metadata["doctor_status"] == "pass"
+    assert result.metadata["api_key_env"] == "OPENAI_API_KEY"
     assert FakeFabric.last_config["harness"]["adapter_id"] == "nvidia.fabric.hermes"
+    assert FakeFabric.last_config["harness"]["resolution"] == "preinstalled"
     assert FakeFabric.last_base_dir == tmp_path
 
 
@@ -163,6 +167,39 @@ def test_validate_preserves_doctor_warnings_without_failing(monkeypatch, tmp_pat
     assert result.metadata["doctor_warnings"] == [
         "model.connectivity: model endpoint was not contacted during preflight"
     ]
+
+
+def test_validate_fails_before_first_turn_when_hermes_key_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    install_fake_fabric(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    worker = NeMoWorker(nemo_config("nvidia.fabric.hermes", env={}))
+
+    result = worker.validate(tmp_path)
+
+    assert result.success is False
+    assert "OPENAI_API_KEY" in result.error
+    assert "dummy value" in result.error
+
+
+def test_validate_accepts_explicit_hermes_api_key_env(monkeypatch, tmp_path: Path) -> None:
+    install_fake_fabric(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    worker = NeMoWorker(
+        nemo_config(
+            "nvidia.fabric.hermes",
+            api_key_env="LOCAL_MODEL_TOKEN",
+            env={"LOCAL_MODEL_TOKEN": "local"},
+        )
+    )
+
+    result = worker.validate(tmp_path)
+
+    assert result.success is True
+    assert result.metadata["api_key_env"] == "LOCAL_MODEL_TOKEN"
+    assert FakeFabric.last_config["models"]["default"]["api_key_env"] == "LOCAL_MODEL_TOKEN"
 
 
 def test_adapter_python_is_scoped_to_one_worker(monkeypatch, tmp_path: Path) -> None:
@@ -209,8 +246,6 @@ def test_adapter_python_override_cannot_leak_to_unscoped_worker(monkeypatch) -> 
     unscoped.start()
 
     assert unscoped_attempted.wait(timeout=2)
-    # Give the unscoped worker a chance to enter the context. Before the fix it
-    # did so immediately and observed the scoped worker's temporary interpreter.
     time.sleep(0.05)
     release_override.set()
     scoped.join(timeout=2)
