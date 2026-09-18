@@ -4,6 +4,7 @@ import asyncio
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -21,13 +22,22 @@ class Worker(Protocol):
 
 
 _ADAPTER_ENV_LOCK = threading.Lock()
-_MAX_TURNS_UNSUPPORTED_ADAPTERS = {"nvidia.fabric.codex"}
+_MAX_TURNS_UNSUPPORTED_ADAPTERS = {
+    "nvidia.fabric.codex",
+    "nvidia.fabric.langchain.deepagents",
+}
 _ADAPTER_INSTALL_HINTS = {
     "nvidia.fabric.hermes": "nemo-fabric[hermes-agent] plus Hermes Agent 0.20+ from source",
     "nvidia.fabric.codex": "nemo-fabric[codex]",
     "nvidia.fabric.claude": "nemo-fabric[claude]",
     "nvidia.fabric.langchain.deepagents": "nemo-fabric[deepagents]",
     "nvidia.fabric.mini-swe-agent": "nemo-fabric[mini-swe-agent]",
+}
+_HERMES_PROVIDER_API_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 
@@ -61,13 +71,10 @@ def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None,
     if not isinstance(raw, dict):
         return None, None, None, raw if raw is not None else None
 
-    # NeMo adapters/providers do not all use the same field names. Prefer the
-    # normalized names, then accept common OpenAI/LangChain aliases.
     input_tokens = _number(raw, "input_tokens", "prompt_tokens", "input")
     output_tokens = _number(raw, "output_tokens", "completion_tokens", "output")
     cost = _number(raw, "cost_usd", "total_cost_usd", "cost")
 
-    # Some providers wrap usage in a nested token_usage/usage object.
     if input_tokens is None or output_tokens is None or cost is None:
         for key in ("token_usage", "usage", "tokens"):
             nested = raw.get(key)
@@ -93,30 +100,40 @@ def _normalized_usage(value: Any) -> tuple[int | None, int | None, float | None,
 
 @contextmanager
 def _adapter_python_env(adapter_python: str | None):
-    """Temporarily select an isolated NeMo adapter environment for one worker.
+    """Temporarily select the Python interpreter NeMo uses for adapter hosts.
 
-    NeMo Fabric discovers Python adapter descriptors and their harness through
-    ADAPTER_PYTHON. WorkerConfig.env is already overrideable per role/strategy,
-    so treating that one key as runtime-owned lets Avo mix incompatible harness
-    environments without introducing another configuration surface.
+    NeMo Fabric discovers Python adapter descriptors and launches their harnesses
+    through ADAPTER_PYTHON. WorkerConfig.env can override that interpreter for a
+    role that needs an isolated environment. Otherwise Avo must explicitly use
+    its own sys.executable: relying on PATH can make descriptor discovery happen
+    in Avo's virtualenv while the persistent adapter host launches from a system
+    Python that cannot import the adapter package.
+
+    ADAPTER_PYTHON lives in process-global os.environ, so every NeMo call must
+    participate in the same lock. Otherwise a worker without an override can run
+    while another worker has temporarily set ADAPTER_PYTHON and silently discover
+    the wrong adapter environment.
     """
 
-    if not adapter_python:
-        yield
-        return
-
-    # os.environ is process-global. Serialize only calls that override the
-    # interpreter so parallel workers cannot discover each other's adapters.
     with _ADAPTER_ENV_LOCK:
         previous = os.environ.get("ADAPTER_PYTHON")
-        os.environ["ADAPTER_PYTHON"] = adapter_python
+        if adapter_python:
+            os.environ["ADAPTER_PYTHON"] = adapter_python
         try:
             yield
         finally:
-            if previous is None:
-                os.environ.pop("ADAPTER_PYTHON", None)
-            else:
-                os.environ["ADAPTER_PYTHON"] = previous
+            if adapter_python:
+                if previous is None:
+                    os.environ.pop("ADAPTER_PYTHON", None)
+                else:
+                    os.environ["ADAPTER_PYTHON"] = previous
+
+
+def _effective_adapter_python(config: WorkerConfig) -> str:
+    """Return the interpreter Fabric should use to discover and launch adapters."""
+
+    configured = config.env.get("ADAPTER_PYTHON", "").strip()
+    return configured or sys.executable
 
 
 def _nemo_failure(exc: Exception, adapter_id: str) -> str:
@@ -131,6 +148,36 @@ def _nemo_failure(exc: Exception, adapter_id: str) -> str:
             f"Original error: {detail}"
         )
     return f"NeMo Fabric worker failed: {detail}"
+
+
+def _hermes_api_key_env(config: WorkerConfig) -> str | None:
+    if config.adapter_id != "nvidia.fabric.hermes":
+        return None
+    if config.api_key_env:
+        return config.api_key_env
+    provider = str(config.provider or "").strip().lower()
+    api_key_env = _HERMES_PROVIDER_API_KEY_ENV.get(provider)
+    if api_key_env is None:
+        raise RuntimeError(
+            "Hermes requires worker.api_key_env for provider "
+            f"{provider or '<unset>'!r}; Avo cannot infer the credential environment variable."
+        )
+    return api_key_env
+
+
+def _validate_hermes_credentials(config: WorkerConfig) -> str | None:
+    api_key_env = _hermes_api_key_env(config)
+    if api_key_env is None:
+        return None
+    value = config.env.get(api_key_env) or os.environ.get(api_key_env)
+    if value:
+        return api_key_env
+    raise RuntimeError(
+        f"Hermes requires {api_key_env} to be nonempty at runtime. Set it in the Avo process "
+        f"environment or worker.env. The configured provider is {config.provider!r}. "
+        "For an unauthenticated local OpenAI-compatible endpoint, a dummy value such as "
+        "'local' is sufficient; do not use a dummy value for a provider that authenticates requests."
+    )
 
 
 class CommandWorker:
@@ -201,48 +248,63 @@ class NeMoWorker:
 
     def run(self, prompt: str, workspace: Path) -> WorkerResult:
         started = time.monotonic()
-        adapter_python = self.config.env.get("ADAPTER_PYTHON")
+        adapter_python = _effective_adapter_python(self.config)
         try:
             with _adapter_python_env(adapter_python):
                 result = asyncio.run(self._run(prompt, workspace))
             result.duration_seconds = time.monotonic() - started
-            if adapter_python:
-                result.metadata["adapter_python"] = adapter_python
+            result.metadata["adapter_python"] = adapter_python
             return result
         except Exception as exc:
-            metadata: dict[str, Any] = {
-                "backend": "nemo",
-                "adapter_id": self.config.adapter_id,
-            }
-            if adapter_python:
-                metadata["adapter_python"] = adapter_python
-            return WorkerResult(
-                success=False,
-                error=_nemo_failure(exc, self.config.adapter_id),
-                metadata=metadata,
-                duration_seconds=time.monotonic() - started,
-            )
+            return self._failure_result(exc, started, adapter_python)
 
-    async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
+    def validate(self, workspace: Path) -> WorkerResult:
+        """Resolve and diagnose the configured adapter without calling a model."""
+
+        started = time.monotonic()
+        adapter_python = _effective_adapter_python(self.config)
         try:
-            from nemo_fabric import Fabric, FabricConfig
+            with _adapter_python_env(adapter_python):
+                result = asyncio.run(self._validate(workspace))
+            result.duration_seconds = time.monotonic() - started
+            result.metadata["adapter_python"] = adapter_python
+            return result
+        except Exception as exc:
+            return self._failure_result(exc, started, adapter_python)
+
+    def _failure_result(
+        self,
+        exc: Exception,
+        started: float,
+        adapter_python: str | None,
+    ) -> WorkerResult:
+        metadata: dict[str, Any] = {
+            "backend": "nemo",
+            "adapter_id": self.config.adapter_id,
+        }
+        if adapter_python:
+            metadata["adapter_python"] = adapter_python
+        return WorkerResult(
+            success=False,
+            error=_nemo_failure(exc, self.config.adapter_id),
+            metadata=metadata,
+            duration_seconds=time.monotonic() - started,
+        )
+
+    def _fabric_config(self, workspace: Path):
+        try:
+            from nemo_fabric import FabricConfig
         except ImportError as exc:
             raise RuntimeError(
                 "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
             ) from exc
 
-        # ADAPTER_PYTHON selects the adapter host interpreter and must be visible
-        # to the Fabric runtime process, not forwarded as a harness environment
-        # variable. Other configured variables remain harness-visible.
         harness_env = dict(self.config.env)
         harness_env.pop("ADAPTER_PYTHON", None)
 
         runtime: dict[str, Any] = {
             "timeout_seconds": self.config.timeout_seconds,
         }
-        # max_turns is a normalized optional capability, not a universal one.
-        # Codex intentionally has no mapping for it; including Avo's default of
-        # 24 makes Fabric reject an otherwise valid Codex configuration.
         if self.config.adapter_id not in _MAX_TURNS_UNSUPPORTED_ADAPTERS:
             runtime["max_turns"] = self.config.max_turns
 
@@ -250,6 +312,7 @@ class NeMoWorker:
             "metadata": {"name": "avo-worker"},
             "harness": {
                 "adapter_id": self.config.adapter_id,
+                "resolution": "preinstalled",
                 "settings": self.config.harness_settings,
             },
             "instructions": {
@@ -287,11 +350,67 @@ class NeMoWorker:
             payload["telemetry"] = self.config.telemetry
 
         if hasattr(FabricConfig, "from_mapping"):
-            config = FabricConfig.from_mapping(payload)
-        else:
-            config = FabricConfig(**payload)
+            return FabricConfig.from_mapping(payload)
+        return FabricConfig(**payload)
 
-        result = await Fabric().run(config, input=prompt)
+    async def _validate(self, workspace: Path) -> WorkerResult:
+        try:
+            from nemo_fabric import Fabric
+        except ImportError as exc:
+            raise RuntimeError(
+                "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
+            ) from exc
+
+        config = self._fabric_config(workspace)
+        fabric = Fabric()
+        plan = fabric.plan(config, base_dir=workspace)
+        resolved_adapter = getattr(getattr(plan, "adapter", None), "adapter_id", None)
+        if resolved_adapter != self.config.adapter_id:
+            raise RuntimeError(
+                f"NeMo Fabric planned adapter {resolved_adapter!r}, expected {self.config.adapter_id!r}"
+            )
+
+        report = await fabric.doctor(config, base_dir=workspace)
+        doctor_status = str(getattr(report, "status", "unknown"))
+        failures = []
+        warnings = []
+        for check in getattr(report, "checks", []) or []:
+            status = str(getattr(check, "status", ""))
+            name = str(getattr(check, "name", "runtime"))
+            message = str(getattr(check, "message", ""))
+            detail = f"{name}: {message}" if message else name
+            if status == "fail":
+                failures.append(detail)
+            elif status == "warn":
+                warnings.append(detail)
+        if doctor_status == "fail" or failures:
+            detail = "; ".join(failures) or "overall status fail"
+            raise RuntimeError(f"NeMo Fabric doctor failed: {detail}")
+        if doctor_status not in {"pass", "warn"}:
+            raise RuntimeError(f"NeMo Fabric doctor returned unknown status {doctor_status!r}")
+
+        api_key_env = _validate_hermes_credentials(self.config)
+        metadata: dict[str, Any] = {
+            "backend": "nemo",
+            "adapter_id": self.config.adapter_id,
+            "doctor_status": doctor_status,
+        }
+        if api_key_env:
+            metadata["api_key_env"] = api_key_env
+        if warnings:
+            metadata["doctor_warnings"] = warnings
+        return WorkerResult(success=True, metadata=metadata)
+
+    async def _run(self, prompt: str, workspace: Path) -> WorkerResult:
+        try:
+            from nemo_fabric import Fabric
+        except ImportError as exc:
+            raise RuntimeError(
+                "NeMo Fabric is not installed. Install this project with the 'nemo' extra."
+            ) from exc
+
+        config = self._fabric_config(workspace)
+        result = await Fabric().run(config, base_dir=workspace, input=prompt)
         output_obj = getattr(result, "output", None)
         response = getattr(output_obj, "response", "") if output_obj is not None else ""
         error_obj = getattr(result, "error", None)

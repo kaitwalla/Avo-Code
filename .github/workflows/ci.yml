@@ -2,14 +2,15 @@ name: AVO Harness
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -19,31 +20,304 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+  install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Create isolated environment
+        run: python -m venv "$RUNNER_TEMP/avo-install"
+      - name: Install pinned Hermes Agent source
+        run: |
+          "$RUNNER_TEMP/avo-install/bin/python" scripts/install_hermes.py "$RUNNER_TEMP/hermes-agent"
+      - name: Install Avo as a package
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/avo-install/bin/python" -m pip install '.[web,nemo]'
+          "$RUNNER_TEMP/avo-install/bin/python" -m pip check
+      - name: Verify installed CLI and default adapter preflight
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/avo-install/bin/avo-harness" --help >/dev/null
+          "$RUNNER_TEMP/avo-install/bin/avo-harness" init \
+            --repo "$GITHUB_WORKSPACE" \
+            --state-dir "$RUNNER_TEMP/avo-state" \
+            --output "$RUNNER_TEMP/avo.json"
+          OPENAI_API_KEY=local \
+            "$RUNNER_TEMP/avo-install/bin/avo-harness" doctor -c "$RUNNER_TEMP/avo.json"
+      - name: Execute real NeMo Hermes turn
+        run: |
+          "$RUNNER_TEMP/avo-install/bin/python" \
+            "$GITHUB_WORKSPACE/tests/support/openai_smoke_server.py" 18080 \
+            >"$RUNNER_TEMP/openai-smoke.log" 2>&1 &
+          fixture_pid=$!
+          cleanup() {
+            kill "$fixture_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/v1/models >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.25
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat "$RUNNER_TEMP/openai-smoke.log"
+            exit 1
+          fi
+
+          cd "$RUNNER_TEMP"
+          OPENAI_API_KEY=smoke "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+
+          from avo_harness.config import WorkerConfig
+          from avo_harness.worker import NeMoWorker
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          worker = NeMoWorker(
+              WorkerConfig(
+                  backend="nemo",
+                  adapter_id="nvidia.fabric.hermes",
+                  provider="openai",
+                  model="local-open-model",
+                  base_url="http://127.0.0.1:18080/v1",
+                  env={"OPENAI_API_KEY": "smoke"},
+                  max_turns=1,
+                  timeout_seconds=30,
+                  system_prompt=(
+                      "This is an installation smoke test. Do not use tools. "
+                      "Return the model response directly."
+                  ),
+              )
+          )
+          preflight = worker.validate(workspace)
+          assert preflight.success, preflight.error
+          result = worker.run("Reply exactly AVO_HERMES_SMOKE_OK", workspace)
+          assert result.success, result.error
+          assert "AVO_HERMES_SMOKE_OK" in result.output, result.output
+          print(result.output)
+          PY
+      - name: Boot installed API and complete a chat message
+        run: |
+          "$RUNNER_TEMP/avo-install/bin/python" \
+            "$GITHUB_WORKSPACE/tests/support/openai_smoke_server.py" 18080 \
+            >"$RUNNER_TEMP/openai-chat-smoke.log" 2>&1 &
+          fixture_pid=$!
+
+          "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"], "avo.json")
+          config = json.loads(path.read_text())
+          config["worker"]["provider"] = "openai"
+          config["worker"]["model"] = "local-open-model"
+          config["worker"]["base_url"] = "http://127.0.0.1:18080/v1"
+          config["worker"]["max_turns"] = 1
+          config["worker"]["timeout_seconds"] = 30
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+          cd "$RUNNER_TEMP"
+          OPENAI_API_KEY=smoke \
+          AVO_AUTH_DISABLED=1 \
+          AVO_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
+            "$RUNNER_TEMP/avo-install/bin/avo-harness" web \
+              -c "$RUNNER_TEMP/avo.json" \
+              --host 127.0.0.1 \
+              --port 8765 \
+              >"$RUNNER_TEMP/avo-web.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            kill "$fixture_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/health >"$RUNNER_TEMP/health.json"; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" -ne 1 ]; then
+            cat "$RUNNER_TEMP/avo-web.log"
+            cat "$RUNNER_TEMP/openai-chat-smoke.log"
+            exit 1
+          fi
+
+          "$RUNNER_TEMP/avo-install/bin/python" - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          health = json.loads((root / "health.json").read_text())
+          assert health["ok"] is True
+          assert Path(health["state_dir"]) == root / "avo-state"
+
+          with urllib.request.urlopen("http://127.0.0.1:8765/api/chat/conversations") as response:
+              conversations = json.load(response)
+          assert isinstance(conversations, list)
+          for conversation in conversations:
+              assert {"id", "title", "created_at", "updated_at", "message_count"} <= set(conversation)
+
+          request = urllib.request.Request(
+              "http://127.0.0.1:8765/api/chat/messages",
+              data=json.dumps(
+                  {"content": "Return a short installation smoke-test answer.", "auto_execute": False}
+              ).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request) as response:
+              accepted = json.load(response)
+          assert accepted["accepted"] is True, accepted
+          assert accepted["conversation_id"] == "main", accepted
+
+          for _ in range(60):
+              with urllib.request.urlopen("http://127.0.0.1:8765/api/chat/messages?limit=100") as response:
+                  messages = json.load(response)
+              assistants = [item for item in messages if item.get("role") == "assistant"]
+              if assistants:
+                  latest = assistants[-1]
+                  if latest.get("status") == "error":
+                      raise AssertionError(latest)
+                  if latest.get("status") == "complete":
+                      assert "AVO_HERMES_SMOKE_OK" in latest.get("content", ""), latest
+                      break
+              time.sleep(0.5)
+          else:
+              raise AssertionError(f"assistant message did not complete: {messages!r}")
+          PY
+
   ui:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22.13"
           cache: npm
           cache-dependency-path: ui/package.json
       - name: Install
         run: npm install
+      - name: Resolved direct dependencies
+        run: npm ls --depth=0
       - name: Typecheck
         run: npm run typecheck
+      - name: Expo dependency compatibility
+        run: npx expo install --check
       - name: Export web
         run: npx expo export --platform web
 
   image:
     runs-on: ubuntu-latest
-    needs: [test, ui]
+    needs: [test, install-smoke, ui]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build unified web/API image
         run: docker build --tag avo-code-ci .
-      - name: Verify NeMo Fabric runtime
-        run: docker run --rm --entrypoint python avo-code-ci -c "import nemo_fabric; print('NeMo Fabric available')"
+      - name: Verify packaged runtime
+        run: |
+          docker run --rm --entrypoint python avo-code-ci -m pip check
+          docker run --rm --entrypoint avo-harness avo-code-ci --help >/dev/null
+      - name: Boot production image and exercise UI/API
+        run: |
+          smoke="$RUNNER_TEMP/avo-image-smoke"
+          mkdir -p "$smoke/data" "$smoke/repo"
+          git -C "$smoke/repo" init
+          git -C "$smoke/repo" config user.email ci@example.invalid
+          git -C "$smoke/repo" config user.name "Avo CI"
+          printf 'smoke\n' >"$smoke/repo/README.md"
+          git -C "$smoke/repo" add README.md
+          git -C "$smoke/repo" commit -m init
+
+          docker run --rm \
+            --entrypoint avo-harness \
+            -v "$smoke/data:/data" \
+            -v "$smoke/repo:/workspace" \
+            avo-code-ci \
+            init --repo /workspace --state-dir /data/state --output /data/avo.json
+
+          docker run --rm \
+            --entrypoint avo-harness \
+            -e OPENAI_API_KEY=local \
+            -v "$smoke/data:/data" \
+            -v "$smoke/repo:/workspace" \
+            avo-code-ci \
+            doctor -c /data/avo.json
+
+          docker run -d \
+            --name avo-code-smoke \
+            -p 127.0.0.1:8765:8765 \
+            -v "$smoke/data:/data" \
+            -v "$smoke/repo:/workspace" \
+            -e OPENAI_API_KEY=local \
+            -e AVO_AUTH_DISABLED=1 \
+            -e AVO_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
+            avo-code-ci
+
+          cleanup() {
+            docker rm -f avo-code-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/health >"$smoke/health.json"; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" -ne 1 ]; then
+            docker logs avo-code-smoke
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          smoke = Path(os.environ["RUNNER_TEMP"], "avo-image-smoke")
+          health = json.loads((smoke / "health.json").read_text())
+          assert health["ok"] is True
+          assert health["state_dir"] == "/data/state"
+          assert health["static_web"] is True
+          PY
+          curl -fsS http://127.0.0.1:8765/api/chat/conversations >"$smoke/conversations.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          smoke = Path(os.environ["RUNNER_TEMP"], "avo-image-smoke")
+          conversations = json.loads((smoke / "conversations.json").read_text())
+          assert isinstance(conversations, list)
+          for conversation in conversations:
+              assert {"id", "title", "created_at", "updated_at", "message_count"} <= set(conversation)
+          PY
+          curl -fsS http://127.0.0.1:8765/ >"$smoke/index.html"
+          grep -Eiq '<!doctype html|<html' "$smoke/index.html"
+
+          docker rm -f avo-code-smoke >/dev/null
+          trap - EXIT
+          test -f "$smoke/data/state/state.sqlite3"

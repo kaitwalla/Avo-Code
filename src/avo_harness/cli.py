@@ -12,6 +12,7 @@ from .config import AVOConfig, WorkerConfig, example_config
 from .gitops import GitRepo
 from .orchestrator import Orchestrator
 from .store import Store
+from .worker import NeMoWorker
 
 
 def _load(path: str) -> AVOConfig:
@@ -23,21 +24,69 @@ def cmd_init(args: argparse.Namespace) -> int:
     if path.exists() and not args.force:
         print(f"refusing to overwrite {path}; use --force", file=sys.stderr)
         return 2
-    path.write_text(json.dumps(example_config(args.repo), indent=2) + "\n", encoding="utf-8")
+    config = example_config(args.repo)
+    if args.state_dir is not None:
+        config["state_dir"] = args.state_dir
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     print(path)
     return 0
 
 
-def _check_worker(label: str, worker: WorkerConfig, problems: list[str]) -> None:
+def _check_worker(
+    label: str,
+    worker: WorkerConfig,
+    workspace: Path,
+    problems: list[str],
+    warnings: list[str],
+) -> None:
     if worker.backend == "command":
         executable = worker.command[0]
         if "{" not in executable and shutil.which(executable) is None:
             problems.append(f"{label} executable not found: {executable}")
-    else:
-        try:
-            import nemo_fabric  # noqa: F401
-        except ImportError:
-            problems.append(f"{label}: nemo_fabric is not installed; install avo-harness[nemo]")
+        return
+
+    # Importing nemo_fabric alone is not a usable-runtime check. The runtime can
+    # import while having zero discoverable adapter descriptors, which is exactly
+    # the failure mode that produces "available adapters: []" at execution time.
+    # NeMoWorker.validate resolves the configured adapter and runs Fabric.doctor
+    # without contacting the model.
+    result = NeMoWorker(worker).validate(workspace)
+    if not result.success:
+        problems.append(f"{label}: {result.error}")
+        return
+    warnings.extend(
+        f"{label}: {warning}"
+        for warning in result.metadata.get("doctor_warnings", [])
+    )
+
+
+def _configured_workers(config: AVOConfig) -> list[tuple[str, WorkerConfig]]:
+    workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
+    if config.planner.enabled and config.planner.worker is not None:
+        workers.append(("planner", config.planner.worker))
+    if config.supervisor.enabled and config.supervisor.worker is not None:
+        workers.append(("supervisor", config.supervisor.worker))
+    if config.team.enabled:
+        workers.extend(
+            (f"team.roles.{name}", worker)
+            for name, worker in config.team.resolved_workers(config.worker).items()
+        )
+    return workers
+
+
+def _check_configured_workers(config: AVOConfig) -> tuple[list[str], list[str]]:
+    problems: list[str] = []
+    warnings: list[str] = []
+    for label, worker in _configured_workers(config):
+        _check_worker(label, worker, config.repo_path, problems, warnings)
+    return list(dict.fromkeys(problems)), list(dict.fromkeys(warnings))
+
+
+def _print_worker_diagnostics(problems: list[str], warnings: list[str]) -> None:
+    for item in problems:
+        print(f"FAIL: {item}")
+    for item in warnings:
+        print(f"WARN: {item}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -53,24 +102,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         except Exception as exc:
             problems.append(str(exc))
 
-    workers: list[tuple[str, WorkerConfig]] = [("worker", config.worker)]
-    if config.planner.enabled and config.planner.worker is not None:
-        workers.append(("planner", config.planner.worker))
-    if config.supervisor.enabled and config.supervisor.worker is not None:
-        workers.append(("supervisor", config.supervisor.worker))
-    if config.team.enabled:
-        workers.extend(
-            (f"team.roles.{name}", worker)
-            for name, worker in config.team.resolved_workers(config.worker).items()
-        )
-    for label, worker in workers:
-        _check_worker(label, worker, problems)
-
+    worker_problems, warnings = _check_configured_workers(config)
+    problems.extend(worker_problems)
+    problems = list(dict.fromkeys(problems))
+    _print_worker_diagnostics(problems, warnings)
     if problems:
-        for item in dict.fromkeys(problems):
-            print(f"FAIL: {item}")
         return 1
-    print("OK: configuration and runtime prerequisites look usable")
+    print("OK: configuration, adapters, harnesses, and runtime prerequisites look usable")
     return 0
 
 
@@ -125,6 +163,17 @@ def cmd_web(args: argparse.Namespace) -> int:
         return 2
     from .api_chat import create_app
 
+    # Fail before binding a port if the configured worker stack cannot actually
+    # resolve its adapter/harness or lacks Hermes' required credential variable.
+    # This intentionally does not call the model endpoint. Connectivity remains
+    # an execution-time concern, but install/runtime mistakes should never hide
+    # behind a web server that appears healthy until its first chat request.
+    config = _load(args.config)
+    problems, warnings = _check_configured_workers(config)
+    _print_worker_diagnostics(problems, warnings)
+    if problems:
+        return 2
+
     uvicorn.run(create_app(args.config), host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
@@ -154,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="write an example JSON configuration")
     init.add_argument("--repo", default=".")
     init.add_argument("--output", default="avo.json")
+    init.add_argument(
+        "--state-dir",
+        help="persistent state directory written into the generated configuration",
+    )
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
