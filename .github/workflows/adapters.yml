@@ -112,7 +112,10 @@ jobs:
             fi
             sleep 0.25
           done
-          test "$ready" -eq 1
+          if [ "$ready" -ne 1 ]; then
+            cat "$RUNNER_TEMP/isolated-hermes-smoke.log"
+            exit 1
+          fi
 
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/avo-main/bin/python" - <<'PY'

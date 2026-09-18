@@ -36,6 +36,17 @@ def checkout(destination: Path, ref: str) -> None:
             raise SystemExit(
                 f"refusing to replace non-git path used for Hermes Agent: {destination}"
             )
+        origin = subprocess.run(
+            ("git", "-C", str(destination), "remote", "get-url", "origin"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if origin != HERMES_REPOSITORY:
+            raise SystemExit(
+                f"refusing to reuse Hermes Agent checkout with unexpected origin: "
+                f"{destination} tracks {origin!r}, expected {HERMES_REPOSITORY!r}"
+            )
         run("git", "-C", str(destination), "fetch", "--depth", "1", "origin", ref)
         run("git", "-C", str(destination), "checkout", "--detach", "FETCH_HEAD")
         return
